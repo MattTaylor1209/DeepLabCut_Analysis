@@ -9,6 +9,8 @@ library(slider)
 library(DT)
 library(multcomp)
 library(broom)
+library(colourpicker)
+library(plotly)
 
 # ----------------------------
 # Helper functions (pipeline)
@@ -154,6 +156,63 @@ plot_speed_trace <- function(df_long, ttl = "") {
     labs(title = ttl, x = "Frame", y = "Speed (px/frame)")
 }
 
+make_segments <- function(df_long) {
+  df_long %>%
+    arrange(individual, bodypart, frame) %>%
+    group_by(individual, bodypart) %>%
+    mutate(
+      xend = lead(x),
+      yend = lead(y),
+      moving_seg = moving   # segment colour uses current frame's moving status
+    ) %>%
+    ungroup() %>%
+    filter(!is.na(xend), !is.na(yend))
+}
+
+plot_trajectory_coloured_segments <- function(df_long,
+                                              xlim = c(0, 1280),
+                                              ylim = c(0, 960),
+                                              ttl = "",
+                                              moving_col = "#2ca02c",
+                                              still_col  = "#7f7f7f",
+                                              line_width = 0.6,
+                                              axis_title_size = 13,
+                                              axis_text_size  = 11,
+                                              strip_text_size = 13,
+                                              legend_position = "top") {
+  seg <- make_segments(df_long)
+  
+  seg <- seg %>%
+    mutate(
+      moving_seg = dplyr::case_when(
+        is.na(moving_seg) ~ "Unknown",
+        moving_seg ~ "Moving",
+        TRUE ~ "Still"
+      ),
+      moving_seg = factor(moving_seg, levels = c("Moving", "Still", "Unknown"))
+    )
+  
+  ggplot(seg, aes(x = x, y = y, xend = xend, yend = yend)) +
+    geom_segment(aes(colour = moving_seg), linewidth = line_width, alpha = 0.9) +
+    facet_wrap(~ individual, ncol = 2) +
+    coord_fixed(xlim = xlim, ylim = ylim) +
+    scale_colour_manual(
+      values = c(Moving = moving_col, Still = still_col, Unknown = "black"),
+      drop = FALSE
+    ) +
+    theme_minimal(base_size = 14) +
+    theme(
+      legend.position = legend_position,
+      legend.title = element_text(face = "bold"),
+      strip.text = element_text(face = "bold", size = strip_text_size),
+      axis.title = element_text(size = axis_title_size),
+      axis.text  = element_text(size = axis_text_size),
+      plot.title = element_text(face = "bold", hjust = 0.5)
+    ) +
+    labs(title = ttl, x = "x (px)", y = "y (px)", colour = NULL)
+}
+
+
 # ----------------------------
 # Shiny app
 # ----------------------------
@@ -181,6 +240,19 @@ ui <- fluidPage(
       numericInput("x_max", "x max", value = 1280),
       numericInput("y_min", "y min", value = 0),
       numericInput("y_max", "y max", value = 960),
+      tags$h4("Trajectory styling"),
+      colourInput("moving_col", "Moving colour", value = "#2ca02c"),
+      colourInput("still_col",  "Still colour",  value = "#7f7f7f"),
+      numericInput("line_width", "Line width", value = 0.6, min = 0.1, step = 0.1),
+      selectInput("legend_pos", "Legend position",
+                  choices = c("top","bottom","left","right","none"),
+                  selected = "top"),
+      
+      tags$h4("Text sizes"),
+      numericInput("axis_title_size", "Axis title size", value = 13, min = 6, step = 1),
+      numericInput("axis_text_size",  "Axis text size",  value = 11, min = 6, step = 1),
+      numericInput("strip_text_size", "Facet strip size", value = 13, min = 6, step = 1),
+      
       
       tags$hr(),
       actionButton("run", "Load & process", class = "btn-primary"),
@@ -214,8 +286,8 @@ ui <- fluidPage(
         ),
         tabPanel("Dunnett vs reference",
                  tags$p("Tip: The reference group is the FIRST level of the factor. You can relevel by editing 'Group order' below."),
-                 textInput("group_order", "Group order (comma-separated; first = reference)", value = ""),
-                 actionButton("apply_levels", "Apply group order"),
+                 uiOutput("ref_group_ui"),
+                 actionButton("run_dunnett", "Run Dunnett"),
                  tags$br(), tags$br(),
                  DTOutput("dunnett_table")
         )
@@ -341,25 +413,26 @@ server <- function(input, output, session) {
     }
   })
   
-  dunnett_res <- reactive({
+  output$ref_group_ui <- renderUI({
     df <- summary_df()
     req(df)
+    grps <- sort(unique(df$group))
+    selectInput("ref_group", "Reference group", choices = grps, selected = grps[[1]])
+  })
+  
+  dunnett_res <- eventReactive(input$run_dunnett, {
+    df <- summary_df()
+    req(df, input$ref_group)
     
-    # apply custom level order if provided
-    lev <- group_levels()
-    if (!is.null(lev) && length(lev) > 1) {
-      df <- df %>% mutate(group = factor(group, levels = lev))
-    } else {
-      df <- df %>% mutate(group = factor(group))
-    }
-    
-    # Need >=2 groups for Dunnett
-    if (nlevels(df$group) < 2) return(tibble(note = "Need at least 2 groups."))
+    # set the chosen reference as the first level
+    df <- df %>%
+      mutate(group = factor(group, levels = c(input$ref_group, setdiff(sort(unique(group)), input$ref_group))))
     
     aov_fit <- aov(mean_speed ~ group, data = df)
     gl <- multcomp::glht(aov_fit, linfct = multcomp::mcp(group = "Dunnett"))
     broom::tidy(gl)
-  })
+  }, ignoreInit = TRUE)
+  
   
   output$dunnett_table <- renderDT({
     dat <- dunnett_res()
@@ -372,11 +445,25 @@ server <- function(input, output, session) {
   output$traj_plot <- renderPlot({
     df <- processed_selected()
     req(nrow(df) > 0)
+    
     xlim <- c(input$x_min, input$x_max)
     ylim <- c(input$y_min, input$y_max)
-    ttl <- paste0("Trajectory: ", unique(df$title))
-    plot_trajectory(df, xlim = xlim, ylim = ylim, ttl = ttl)
+    ttl  <- paste0("Trajectory (moving segments coloured): ", unique(df$title))
+    
+    plot_trajectory_coloured_segments(
+      df_long = df,
+      xlim = xlim, ylim = ylim,
+      ttl = ttl,
+      moving_col = input$moving_col,
+      still_col  = input$still_col,
+      line_width = input$line_width,
+      axis_title_size = input$axis_title_size,
+      axis_text_size  = input$axis_text_size,
+      strip_text_size = input$strip_text_size,
+      legend_position = input$legend_pos
+    )
   })
+  
   
   output$traj_moving_plot <- renderPlot({
     df <- processed_selected()
