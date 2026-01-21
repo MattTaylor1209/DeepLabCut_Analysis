@@ -94,16 +94,21 @@ add_movement_flag <- function(df_long, threshold_px = 2, window_n = 5) {
     ungroup()
 }
 
-extract_title <- function(file_name) {
-  # default: everything before "DLC" (matches what you were doing)
-  out <- str_extract(file_name, "^.*(?=DLC)")
-  ifelse(is.na(out), file_name, out)
+extract_group <- function(file_name) {
+  # capture everything before _<digits>DLC
+  grp <- stringr::str_extract(file_name, "^.*(?=_[0-9]+DLC)")
+  if (is.na(grp)) {
+    # fallback if pattern not found: use everything before "DLC" (old behaviour)
+    grp <- stringr::str_extract(file_name, "^.*(?=DLC)")
+  }
+  grp
 }
 
-extract_group <- function(file_name) {
-  # default: use the "title" as group label; customise if you have a strict naming scheme
-  extract_title(file_name)
+extract_title <- function(file_name) {
+  # If you want "title" to match group, just reuse it:
+  extract_group(file_name)
 }
+
 
 process_one_file <- function(path,
                              bodyparts_keep = c("mid"),
@@ -263,7 +268,9 @@ server <- function(input, output, session) {
   })
   
   # Process all files when user clicks "Load & process"
-  processed_all <- eventReactive(input$run, {
+  processed_all <- reactiveVal(NULL)
+  
+  observeEvent(input$run, {
     df <- files_df()
     req(nrow(df) > 0)
     
@@ -272,9 +279,9 @@ server <- function(input, output, session) {
     
     likelihood_min <- if (is.na(input$likelihood_min)) NULL else input$likelihood_min
     
-    withProgress(message = "Processing files...", value = 0, {
-      out <- map_dfr(df$file_path, ~{
-        incProgress(1 / nrow(df))
+    shiny::withProgress(message = "Processing files...", value = 0, {
+      out <- purrr::map_dfr(df$file_path, ~{
+        shiny::incProgress(1 / nrow(df))
         process_one_file(
           .x,
           bodyparts_keep = if (length(bodyparts_keep)) bodyparts_keep else NULL,
@@ -283,9 +290,16 @@ server <- function(input, output, session) {
           window_n = input$window_n
         )
       })
-      out
+      processed_all(out)
     })
+    
+    showNotification(
+      paste0("Done. Processed ", n_distinct(processed_all()$file_name), " file(s)."),
+      type = "message",
+      duration = 4
+    )
   }, ignoreInit = TRUE)
+  
   
   # Subset for chosen file
   processed_selected <- reactive({
