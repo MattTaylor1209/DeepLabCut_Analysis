@@ -269,7 +269,7 @@ ui <- fluidPage(
                  DTOutput("files_table")
         ),
         tabPanel("Trajectory",
-                 plotOutput("traj_plot", height = 700),
+                 plotlyOutput("traj_plotly", height = 700),
                  downloadButton("download_traj", "Download trajectory plot (PNG)")
         ),
         tabPanel("Trajectory (moving only)",
@@ -442,7 +442,7 @@ server <- function(input, output, session) {
   
   # ---- Plots ----
   
-  output$traj_plot <- renderPlot({
+  output$traj_plotly <- renderPlotly({
     df <- processed_selected()
     req(nrow(df) > 0)
     
@@ -450,7 +450,7 @@ server <- function(input, output, session) {
     ylim <- c(input$y_min, input$y_max)
     ttl  <- paste0("Trajectory (moving segments coloured): ", unique(df$title))
     
-    plot_trajectory_coloured_segments(
+    p <- plot_trajectory_coloured_segments(
       df_long = df,
       xlim = xlim, ylim = ylim,
       ttl = ttl,
@@ -460,8 +460,16 @@ server <- function(input, output, session) {
       axis_title_size = input$axis_title_size,
       axis_text_size  = input$axis_text_size,
       strip_text_size = input$strip_text_size,
-      legend_position = input$legend_pos
+      legend_position = if (input$legend_pos == "none") "none" else input$legend_pos
     )
+    
+    ggplotly(p, dynamicTicks = TRUE) %>%
+      layout(dragmode = "zoom") %>%
+      config(
+        displaylogo = FALSE,
+        scrollZoom = TRUE,
+        modeBarButtonsToAdd = c("zoom2d","pan2d","select2d","lasso2d","resetScale2d")
+      )
   })
   
   
