@@ -17,33 +17,57 @@ library(plotly)
 # ----------------------------
 
 read_dlc_filtered_csv <- function(path) {
-  header_lines <- readLines(path, n = 3)
+  header_lines <- readLines(path, n = 4, warn = FALSE)
+  if (length(header_lines) < 4) return(NULL)
+  
   scorer      <- str_split(header_lines[1], ",")[[1]]
   individuals <- str_split(header_lines[2], ",")[[1]]
   bodyparts   <- str_split(header_lines[3], ",")[[1]]
+  coords      <- str_split(header_lines[4], ",")[[1]]
   
-  coords <- rep(c("x", "y", "likelihood"), length.out = length(individuals) - 1)
-  multi_names <- paste(individuals[-1], bodyparts[-1], coords, sep = "_")
+  # sanity: first column labels
+  if (!tolower(individuals[1]) %in% c("individuals", "individual")) return(NULL)
+  if (!tolower(bodyparts[1])   %in% c("bodyparts", "bodypart"))     return(NULL)
+  if (!tolower(coords[1])      %in% c("coords", "coord"))           return(NULL)
+  
+  # build column names
+  multi_names <- paste(individuals[-1], bodyparts[-1], coords[-1], sep = "_")
   all_colnames <- c("frame", multi_names)
   
   df_raw <- readr::read_csv(
     path,
-    skip = 3,
+    skip = 4,               # <-- IMPORTANT (skip coords too)
     col_names = FALSE,
     show_col_types = FALSE,
     progress = FALSE
   )
   
-  if (ncol(df_raw) != length(all_colnames)) return(NULL)
+  # If readr created fewer/more cols than expected, pad/truncate safely
+  if (ncol(df_raw) < length(all_colnames)) {
+    # pad missing columns with NA
+    for (i in (ncol(df_raw) + 1):length(all_colnames)) df_raw[[i]] <- NA
+  } else if (ncol(df_raw) > length(all_colnames)) {
+    df_raw <- df_raw[, seq_len(length(all_colnames))]
+  }
   
   colnames(df_raw) <- all_colnames
   
-  # Robust frame parsing (prevents "NAs introduced by coercion" poisoning downstream)
   df_raw %>%
-    mutate(frame = readr::parse_number(as.character(frame))) %>%
-    filter(!is.na(frame)) %>%
+    mutate(frame = suppressWarnings(as.integer(frame))) %>%
     mutate(across(-frame, ~ suppressWarnings(as.numeric(.x))))
 }
+
+
+get_dlc_bodyparts <- function(path) {
+  hdr <- readLines(path, n = 3, warn = FALSE)
+  if (length(hdr) < 3) return(character(0))
+  
+  bp <- stringr::str_split(hdr[3], ",")[[1]]
+  bp <- bp[-1] # drop the "bodyparts" label
+  bp <- bp[bp != ""]
+  unique(bp)
+}
+
 
 tidy_dlc <- function(df_raw, bodyparts_keep = NULL, likelihood_min = NULL) {
   df_long <- df_raw %>%
@@ -229,8 +253,8 @@ plot_trajectory_coloured_segments <- function(df_long,
                                               xlim = c(0, 1280),
                                               ylim = c(0, 960),
                                               ttl = "",
-                                              moving_col = "#2ca02c",
-                                              still_col  = "#7f7f7f",
+                                              moving_col = "#11F011",
+                                              still_col  = "#FA05EE",
                                               line_width = 0.6,
                                               axis_title_size = 13,
                                               axis_text_size  = 11,
@@ -286,7 +310,14 @@ ui <- fluidPage(
       
       tags$h4("2) Processing settings"),
       textInput("pattern", "File pattern", value = "filtered.csv"),
-      textInput("bodyparts", "Bodyparts to keep (comma-separated)", value = "mid"),
+      selectizeInput(
+        "bodyparts_keep",
+        "Bodyparts to keep",
+        choices = NULL,
+        selected = "mid",
+        multiple = TRUE,
+        options = list(plugins = list("remove_button"))
+      ),
       numericInput("likelihood_min", "Min likelihood (optional)", value = NA, min = 0, max = 1, step = 0.01),
       numericInput("threshold_px", "Movement threshold (px/frame)", value = 2, min = 0, step = 0.1),
       numericInput("window_n", "Stillness window (frames)", value = 5, min = 1, step = 1),
@@ -308,8 +339,8 @@ ui <- fluidPage(
       numericInput("y_max", "y max", value = 960),
       
       tags$h4("Trajectory styling"),
-      colourInput("moving_col", "Moving colour", value = "#2ca02c"),
-      colourInput("still_col",  "Still colour",  value = "#7f7f7f"),
+      colourInput("moving_col", "Moving colour", value = "#11F011"),
+      colourInput("still_col",  "Still colour",  value = "#FA05EE"),
       numericInput("line_width", "Line width", value = 0.6, min = 0.1, step = 0.1),
       selectInput("legend_pos", "Legend position",
                   choices = c("top","bottom","left","right","none"),
@@ -390,6 +421,34 @@ server <- function(input, output, session) {
     ) %>% arrange(file_name)
   })
   
+  bodyparts_available <- reactive({
+    df <- files_df()
+    req(nrow(df) > 0)
+    
+    # union of bodyparts across all files (only reads header lines, so it's fast)
+    bps <- unique(unlist(lapply(df$file_path, get_dlc_bodyparts)))
+    sort(bps)
+  })
+  
+  observeEvent(bodyparts_available(), {
+    choices <- bodyparts_available()
+    
+    # keep current selection if possible; otherwise default to "mid" if present
+    current <- isolate(input$bodyparts_keep)
+    if (is.null(current) || length(current) == 0) {
+      current <- if ("mid" %in% choices) "mid" else choices[1]
+    } else {
+      current <- intersect(current, choices)
+      if (length(current) == 0) current <- if ("mid" %in% choices) "mid" else choices[1]
+    }
+    
+    updateSelectizeInput(session, "bodyparts_keep",
+                         choices = choices,
+                         selected = current,
+                         server = TRUE)
+  }, ignoreInit = FALSE)
+  
+  
   output$files_table <- renderDT({
     req(files_df())
     datatable(files_df(), options = list(pageLength = 10))
@@ -408,8 +467,8 @@ server <- function(input, output, session) {
     df <- files_df()
     req(nrow(df) > 0)
     
-    bodyparts_keep <- str_split(input$bodyparts, ",")[[1]] %>%
-      str_trim() %>% discard(~ .x == "")
+    bodyparts_keep <- input$bodyparts_keep
+    if (is.null(bodyparts_keep) || length(bodyparts_keep) == 0) bodyparts_keep <- NULL
     
     likelihood_min <- if (is.na(input$likelihood_min)) NULL else input$likelihood_min
     
