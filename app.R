@@ -3,6 +3,7 @@
 
 library(shiny)
 library(shinyFiles)
+library(shinythemes)
 library(tidyverse)
 library(stringr)
 library(slider)
@@ -20,6 +21,7 @@ source("R/helpers_dlc.R")
 # ----------------------------
 
 ui <- fluidPage(
+  shinythemes::themeSelector(),
   titlePanel("DeepLabCut CSV Explorer (filtered.csv)"),
   
   sidebarLayout(
