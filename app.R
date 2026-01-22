@@ -92,6 +92,36 @@ filter_big_jumps <- function(df_long,
     ungroup()
 }
 
+flag_short_excursions <- function(df_long, max_excursion_frames = 10) {
+  # Needs: columns x, y, frame, individual, bodypart, and 'thr' from filter_big_jumps()
+  df_long %>%
+    group_by(individual, bodypart) %>%
+    arrange(frame, .by_group = TRUE) %>%
+    mutate(
+      xend = lead(x),
+      yend = lead(y),
+      seg_dist = sqrt((xend - x)^2 + (yend - y)^2),
+      
+      # big jump on the segment i -> i+1
+      big_jump_next = seg_dist > thr,
+      
+      # region increments *after* a big jump segment
+      region = cumsum(dplyr::lag(big_jump_next, default = FALSE)),
+      
+      max_region = max(region, na.rm = TRUE),
+      
+      # candidate excursion regions are those after the first jump AND before the last jump
+      is_excursion_region = region >= 1 & region < max_region,
+      
+      region_n = ave(region, region, FUN = length),
+      
+      # mark short excursions (whole region)
+      bad_excursion = is_excursion_region & (region_n <= max_excursion_frames)
+    ) %>%
+    ungroup()
+}
+
+
 add_movement_flag <- function(df_long, threshold_px = 2, window_n = 5) {
   df_long %>%
     group_by(individual, bodypart) %>%
@@ -132,7 +162,8 @@ process_one_file <- function(path,
                              window_n = 5,
                              max_jump_px = 50,
                              use_robust_jump = FALSE,
-                             robust_mult = 10) {
+                             robust_mult = 10,
+                             max_excursion_frames = 10) {
   
   fn <- basename(path)
   df_raw <- read_dlc_filtered_csv(path)
@@ -146,6 +177,7 @@ process_one_file <- function(path,
       use_robust_jump = use_robust_jump,
       robust_mult = robust_mult
     ) %>%
+    flag_short_excursions(max_excursion_frames = max_excursion_frames) %>% 
     add_movement_flag(threshold_px = threshold_px, window_n = window_n) %>%
     mutate(
       file_path = path,
@@ -264,7 +296,9 @@ ui <- fluidPage(
       numericInput("max_jump_px", "Max allowed step distance (px)", value = 50, min = 0, step = 5),
       checkboxInput("use_robust_jump", "Use robust per-track threshold (median * multiplier)", value = FALSE),
       numericInput("robust_mult", "Robust multiplier", value = 10, min = 1, step = 1),
-      
+      checkboxInput("drop_bad_excursions", "Drop short excursions between big jumps", value = TRUE),
+      numericInput("max_excursion_frames", "Max excursion length (frames)", value = 10, min = 1, step = 1),
+    
       tags$hr(),
       
       tags$h4("3) Plot settings"),
@@ -393,7 +427,8 @@ server <- function(input, output, session) {
           # ✅ PASS YOUR JUMP FILTER UI VALUES
           max_jump_px     = input$max_jump_px,
           use_robust_jump = input$use_robust_jump,
-          robust_mult     = input$robust_mult
+          robust_mult     = input$robust_mult,
+          max_excursion_frames = input$max_excursion_frames
         )
       })
       processed_all(out)
