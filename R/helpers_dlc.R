@@ -106,6 +106,75 @@ filter_big_jumps <- function(df_long,
     ungroup()
 }
 
+
+# Calculate angle between 3 body parts
+
+angle_deg <- function(A, B, C) {
+  # A, B, C are numeric vectors length 2: c(x, y)
+  BA <- A - B
+  BC <- C - B
+  
+  # protect against zero-length vectors
+  if (any(!is.finite(c(BA, BC))) || (sum(BA^2) == 0) || (sum(BC^2) == 0)) {
+    return(NA_real_)
+  }
+  
+  # angle via atan2(|cross|, dot)  -> stable, returns [0, pi]
+  cross <- BA[1] * BC[2] - BA[2] * BC[1]
+  dot   <- BA[1] * BC[1] + BA[2] * BC[2]
+  
+  ang <- atan2(cross, dot)                # [-pi, pi]
+  ang_deg <- ang * 180 / pi               # [-180, 180]
+  
+  if (ang_deg < 0) ang_deg <- ang_deg + 360  # [0, 360)
+  ang_deg
+}
+
+
+compute_angles <- function(df_long, parts3, vertex = parts3[2]) {
+  stopifnot(length(parts3) == 3, vertex %in% parts3)
+  
+  others <- setdiff(parts3, vertex)
+  A_name <- others[1]
+  C_name <- others[2]
+  B_name <- vertex
+  
+  df_wide <- df_long %>%
+    filter(bodypart %in% parts3) %>%
+    select(frame, individual, bodypart, x, y) %>%
+    tidyr::pivot_wider(
+      names_from = bodypart,
+      values_from = c(x, y),
+      names_glue = "{bodypart}_{.value}"
+    )
+  
+  needed <- c(
+    paste0(A_name, c("_x","_y")),
+    paste0(B_name, c("_x","_y")),
+    paste0(C_name, c("_x","_y"))
+  )
+  if (!all(needed %in% names(df_wide))) {
+    return(df_wide %>% transmute(frame, individual, angle = NA_real_))
+  }
+  
+  ax <- paste0(A_name, "_x"); ay <- paste0(A_name, "_y")
+  bx <- paste0(B_name, "_x"); by <- paste0(B_name, "_y")
+  cx <- paste0(C_name, "_x"); cy <- paste0(C_name, "_y")
+  
+  df_wide %>%
+    mutate(
+      angle = purrr::pmap_dbl(
+        list(.data[[ax]], .data[[ay]],
+             .data[[bx]], .data[[by]],
+             .data[[cx]], .data[[cy]]),
+        ~ angle_deg(c(..1, ..2), c(..3, ..4), c(..5, ..6))
+      )
+    ) %>%
+    select(frame, individual, angle)
+}
+
+
+
 flag_short_excursions <- function(df_long, max_excursion_frames = 10) {
   # Needs: columns x, y, frame, individual, bodypart, and 'thr' from filter_big_jumps()
   df_long %>%
@@ -184,21 +253,45 @@ process_one_file <- function(path,
                              max_jump_px = 50,
                              use_robust_jump = FALSE,
                              robust_mult = 10,
-                             max_excursion_frames = 10) {
+                             max_excursion_frames = 10,
+                             compute_angle = FALSE,
+                             angle_vertex = NULL) {
   
   fn <- basename(path)
   df_raw <- read_dlc_filtered_csv(path)
   if (is.null(df_raw)) return(NULL)
   
-  df_raw %>%
-    tidy_dlc(bodyparts_keep = bodyparts_keep, likelihood_min = likelihood_min) %>%
+  # 1) df_long created here (THIS is what angles should use)
+  df_long <- tidy_dlc(df_raw, bodyparts_keep = bodyparts_keep, likelihood_min = likelihood_min)
+  
+  # 2) Optionally compute angle from df_long (NOT df_raw)
+  if (isTRUE(compute_angle) && !is.null(bodyparts_keep) && length(bodyparts_keep) == 3) {
+    
+    vertex <- if (!is.null(angle_vertex) && angle_vertex %in% bodyparts_keep) {
+      angle_vertex
+    } else {
+      bodyparts_keep[2]  # default: middle selection is vertex
+    }
+    
+    angle_tbl <- compute_angles(df_long, parts3 = bodyparts_keep, vertex = vertex)
+    
+    # join angle back onto df_long so it flows through the rest of your pipeline
+    df_long <- df_long %>%
+      left_join(angle_tbl, by = c("frame", "individual"))
+    
+  } else {
+    df_long <- df_long %>% mutate(angle = NA_real_)
+  }
+  
+  # 3) Continue pipeline as normal
+  df_long %>%
     add_speed() %>%
     filter_big_jumps(
       max_jump_px = max_jump_px,
       use_robust_jump = use_robust_jump,
       robust_mult = robust_mult
     ) %>%
-    flag_short_excursions(max_excursion_frames = max_excursion_frames) %>% 
+    flag_short_excursions(max_excursion_frames = max_excursion_frames) %>%
     add_movement_flag(threshold_px = threshold_px, window_n = window_n) %>%
     mutate(
       file_path = path,
@@ -289,4 +382,15 @@ plot_trajectory_coloured_segments <- function(df_long,
       plot.title = element_text(face = "bold", hjust = 0.5)
     ) +
     labs(title = ttl, x = "x (px)", y = "y (px)", colour = NULL)
+}
+
+
+plot_angle_trace <- function(df_long, ttl = "") {
+  ggplot(df_long, aes(x = frame, y = angle)) +
+    geom_line(alpha = 0.6) +
+    geom_hline(yintercept = 180, colour = "red3", linetype = "dashed")+
+    facet_wrap(~ individual, ncol = 2, scales = "free_y") +
+    theme_minimal(base_size = 14) +
+    theme(plot.title = element_text(face = "bold", hjust = 0.5)) +
+    labs(title = ttl, x = "Frame", y = "Angle (degrees)")
 }

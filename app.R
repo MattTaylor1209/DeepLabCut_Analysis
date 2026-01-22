@@ -12,6 +12,7 @@ library(multcomp)
 library(broom)
 library(colourpicker)
 library(plotly)
+library(LearnGeom)
 
 
 source("R/helpers_dlc.R")
@@ -19,6 +20,14 @@ source("R/helpers_dlc.R")
 # ----------------------------
 # Shiny app
 # ----------------------------
+
+# To add
+# Angles/headswings
+# Time moving
+# Distance traveled
+# Rolling?
+# Speed decay over time - are they getting tired?
+# Pause duration
 
 ui <- fluidPage(
   shinythemes::themeSelector(),
@@ -44,6 +53,8 @@ ui <- fluidPage(
       numericInput("likelihood_min", "Min likelihood (optional)", value = NA, min = 0, max = 1, step = 0.01),
       numericInput("threshold_px", "Movement threshold (px/frame)", value = 2, min = 0, step = 0.1),
       numericInput("window_n", "Stillness window (frames)", value = 10, min = 1, step = 1),
+      checkboxInput("compute_angle", "Compute angle (requires exactly 3 bodyparts)", value = TRUE),
+      uiOutput("angle_vertex_ui"),
       
       tags$h4("Jump filtering"),
       checkboxInput("drop_big_jumps", "Drop big jumps in plots", value = TRUE),
@@ -66,6 +77,11 @@ ui <- fluidPage(
     
       tags$hr(),
       
+      
+      actionButton("run", "Load & process", class = "btn-primary"),
+      
+      tags$hr(),
+      
       tags$h4("3) Plot settings"),
       numericInput("x_min", "x min", value = 0),
       numericInput("x_max", "x max", value = 1280),
@@ -85,8 +101,6 @@ ui <- fluidPage(
       numericInput("axis_text_size",  "Axis text size",  value = 11, min = 6, step = 1),
       numericInput("strip_text_size", "Facet strip size", value = 13, min = 6, step = 1),
       
-      tags$hr(),
-      actionButton("run", "Load & process", class = "btn-primary"),
       tags$br(), tags$br(),
       uiOutput("file_picker_ui"),
       tags$hr(),
@@ -110,6 +124,11 @@ ui <- fluidPage(
         tabPanel("Speed trace",
                  plotOutput("speed_plot", height = 700),
                  downloadButton("download_speed", "Download speed plot (PNG)")
+        ),
+        tabPanel(
+          "Angle",
+          plotOutput("angle_plot", height = 700),
+          downloadButton("download_angle", "Download angle plot (PNG)")
         ),
         tabPanel("Summary",
                  tags$h4("Mean moving speed per individual (mid by default)"),
@@ -197,6 +216,14 @@ server <- function(input, output, session) {
   
   processed_all <- reactiveVal(NULL)
   
+  output$angle_vertex_ui <- renderUI({
+    req(input$bodyparts_keep)
+    if (length(input$bodyparts_keep) != 3) return(NULL)
+    selectInput("angle_vertex", "Vertex bodypart (point B)", choices = input$bodyparts_keep,
+                selected = input$bodyparts_keep[2])
+  })
+  
+  
   observeEvent(input$run, {
     df <- files_df()
     req(nrow(df) > 0)
@@ -221,7 +248,9 @@ server <- function(input, output, session) {
           max_jump_px     = input$max_jump_px,
           use_robust_jump = input$use_robust_jump,
           robust_mult     = input$robust_mult,
-          max_excursion_frames = input$max_excursion_frames
+          max_excursion_frames = input$max_excursion_frames,
+          compute_angle   = isTRUE(input$compute_angle),
+          angle_vertex    = input$angle_vertex
         )
       })
       processed_all(out)
@@ -399,6 +428,33 @@ server <- function(input, output, session) {
       ggsave(file, p, width = 12, height = 8, dpi = 300)
     }
   )
+  
+  output$angle_plot <- renderPlot({
+    req(input$compute_angle)
+    df <- processed_selected()
+    req(nrow(df) > 0)
+    
+    validate(need("angle" %in% names(df), "Angle column not found (did you re-run processing?)"))
+    df_ang <- df %>% filter(!is.na(angle))
+    
+    validate(need(nrow(df_ang) > 0, "No angle values available (check bodyparts/likelihood)."))
+    
+    ttl <- paste0("Angle over time: ", unique(df$title))
+    plot_angle_trace(df_ang, ttl = ttl)
+  })
+  
+  
+  output$download_angle <- downloadHandler(
+    filename = function() paste0("angle_", tools::file_path_sans_ext(input$selected_file), ".png"),
+    content = function(file) {
+      req(input$compute_angle)
+      df <- processed_selected() %>% filter(!is.na(angle))
+      ttl <- paste0("Angle over time: ", unique(df$title))
+      p <- plot_angle_trace(df, ttl = ttl)
+      ggsave(file, p, width = 12, height = 8, dpi = 300)
+    }
+  )
+  
 }
 
 shinyApp(ui, server)
