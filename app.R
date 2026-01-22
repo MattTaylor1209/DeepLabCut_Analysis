@@ -37,8 +37,11 @@ read_dlc_filtered_csv <- function(path) {
   if (ncol(df_raw) != length(all_colnames)) return(NULL)
   
   colnames(df_raw) <- all_colnames
+  
+  # Robust frame parsing (prevents "NAs introduced by coercion" poisoning downstream)
   df_raw %>%
-    mutate(frame = as.numeric(frame)) %>%
+    mutate(frame = readr::parse_number(as.character(frame))) %>%
+    filter(!is.na(frame)) %>%
     mutate(across(-frame, ~ suppressWarnings(as.numeric(.x))))
 }
 
@@ -75,6 +78,20 @@ add_speed <- function(df_long) {
     ungroup()
 }
 
+filter_big_jumps <- function(df_long,
+                             max_jump_px = 50,
+                             use_robust_jump = FALSE,
+                             robust_mult = 10) {
+  df_long %>%
+    group_by(individual, bodypart) %>%
+    mutate(
+      med_dist = median(dist, na.rm = TRUE),
+      thr = if (use_robust_jump) pmax(max_jump_px, robust_mult * med_dist) else max_jump_px,
+      is_big_jump = dist > thr
+    ) %>%
+    ungroup()
+}
+
 add_movement_flag <- function(df_long, threshold_px = 2, window_n = 5) {
   df_long %>%
     group_by(individual, bodypart) %>%
@@ -97,26 +114,26 @@ add_movement_flag <- function(df_long, threshold_px = 2, window_n = 5) {
 }
 
 extract_group <- function(file_name) {
-  # capture everything before _<digits>DLC
   grp <- stringr::str_extract(file_name, "^.*(?=_[0-9]+DLC)")
   if (is.na(grp)) {
-    # fallback if pattern not found: use everything before "DLC" (old behaviour)
     grp <- stringr::str_extract(file_name, "^.*(?=DLC)")
   }
   grp
 }
 
 extract_title <- function(file_name) {
-  # If you want "title" to match group, just reuse it:
   extract_group(file_name)
 }
-
 
 process_one_file <- function(path,
                              bodyparts_keep = c("mid"),
                              likelihood_min = NULL,
                              threshold_px = 2,
-                             window_n = 5) {
+                             window_n = 5,
+                             max_jump_px = 50,
+                             use_robust_jump = FALSE,
+                             robust_mult = 10) {
+  
   fn <- basename(path)
   df_raw <- read_dlc_filtered_csv(path)
   if (is.null(df_raw)) return(NULL)
@@ -124,6 +141,11 @@ process_one_file <- function(path,
   df_raw %>%
     tidy_dlc(bodyparts_keep = bodyparts_keep, likelihood_min = likelihood_min) %>%
     add_speed() %>%
+    filter_big_jumps(
+      max_jump_px = max_jump_px,
+      use_robust_jump = use_robust_jump,
+      robust_mult = robust_mult
+    ) %>%
     add_movement_flag(threshold_px = threshold_px, window_n = window_n) %>%
     mutate(
       file_path = path,
@@ -156,17 +178,19 @@ plot_speed_trace <- function(df_long, ttl = "") {
     labs(title = ttl, x = "Frame", y = "Speed (px/frame)")
 }
 
-make_segments <- function(df_long) {
+make_segments <- function(df_long, drop_big_jumps = TRUE) {
   df_long %>%
     arrange(individual, bodypart, frame) %>%
     group_by(individual, bodypart) %>%
     mutate(
       xend = lead(x),
       yend = lead(y),
-      moving_seg = moving   # segment colour uses current frame's moving status
+      moving_seg = moving,
+      big_jump_seg = is_big_jump %in% TRUE
     ) %>%
     ungroup() %>%
-    filter(!is.na(xend), !is.na(yend))
+    filter(!is.na(xend), !is.na(yend)) %>%
+    { if (drop_big_jumps) dplyr::filter(., !big_jump_seg) else . }
 }
 
 plot_trajectory_coloured_segments <- function(df_long,
@@ -179,8 +203,10 @@ plot_trajectory_coloured_segments <- function(df_long,
                                               axis_title_size = 13,
                                               axis_text_size  = 11,
                                               strip_text_size = 13,
-                                              legend_position = "top") {
-  seg <- make_segments(df_long)
+                                              legend_position = "top",
+                                              drop_big_jumps = TRUE) {
+  
+  seg <- make_segments(df_long, drop_big_jumps = drop_big_jumps)
   
   seg <- seg %>%
     mutate(
@@ -212,7 +238,6 @@ plot_trajectory_coloured_segments <- function(df_long,
     labs(title = ttl, x = "x (px)", y = "y (px)", colour = NULL)
 }
 
-
 # ----------------------------
 # Shiny app
 # ----------------------------
@@ -233,6 +258,13 @@ ui <- fluidPage(
       numericInput("likelihood_min", "Min likelihood (optional)", value = NA, min = 0, max = 1, step = 0.01),
       numericInput("threshold_px", "Movement threshold (px/frame)", value = 2, min = 0, step = 0.1),
       numericInput("window_n", "Stillness window (frames)", value = 5, min = 1, step = 1),
+      
+      tags$h4("Jump filtering"),
+      checkboxInput("drop_big_jumps", "Drop big jumps in plots", value = TRUE),
+      numericInput("max_jump_px", "Max allowed step distance (px)", value = 50, min = 0, step = 5),
+      checkboxInput("use_robust_jump", "Use robust per-track threshold (median * multiplier)", value = FALSE),
+      numericInput("robust_mult", "Robust multiplier", value = 10, min = 1, step = 1),
+      
       tags$hr(),
       
       tags$h4("3) Plot settings"),
@@ -240,6 +272,7 @@ ui <- fluidPage(
       numericInput("x_max", "x max", value = 1280),
       numericInput("y_min", "y min", value = 0),
       numericInput("y_max", "y max", value = 960),
+      
       tags$h4("Trajectory styling"),
       colourInput("moving_col", "Moving colour", value = "#2ca02c"),
       colourInput("still_col",  "Still colour",  value = "#7f7f7f"),
@@ -252,7 +285,6 @@ ui <- fluidPage(
       numericInput("axis_title_size", "Axis title size", value = 13, min = 6, step = 1),
       numericInput("axis_text_size",  "Axis text size",  value = 11, min = 6, step = 1),
       numericInput("strip_text_size", "Facet strip size", value = 13, min = 6, step = 1),
-      
       
       tags$hr(),
       actionButton("run", "Load & process", class = "btn-primary"),
@@ -285,7 +317,6 @@ ui <- fluidPage(
                  DTOutput("summary_table")
         ),
         tabPanel("Dunnett vs reference",
-                 tags$p("Tip: The reference group is the FIRST level of the factor. You can relevel by editing 'Group order' below."),
                  uiOutput("ref_group_ui"),
                  actionButton("run_dunnett", "Run Dunnett"),
                  tags$br(), tags$br(),
@@ -298,7 +329,6 @@ ui <- fluidPage(
 
 server <- function(input, output, session) {
   
-  # Folder selection (local machine)
   volumes <- c(Home = path.expand("~"), "R()" = R.home(), getVolumes()())
   shinyDirChoose(input, "dir", roots = volumes, session = session)
   
@@ -315,7 +345,6 @@ server <- function(input, output, session) {
     else d
   })
   
-  # Scan files
   files_df <- reactive({
     d <- chosen_dir()
     req(d)
@@ -332,14 +361,13 @@ server <- function(input, output, session) {
     datatable(files_df(), options = list(pageLength = 10))
   })
   
-  # UI for choosing which file to plot
   output$file_picker_ui <- renderUI({
     df <- files_df()
     req(nrow(df) > 0)
-    selectInput("selected_file", "Select file to plot", choices = df$file_name, selected = df$file_name[[1]])
+    selectInput("selected_file", "Select file to plot",
+                choices = df$file_name, selected = df$file_name[[1]])
   })
   
-  # Process all files when user clicks "Load & process"
   processed_all <- reactiveVal(NULL)
   
   observeEvent(input$run, {
@@ -354,12 +382,18 @@ server <- function(input, output, session) {
     shiny::withProgress(message = "Processing files...", value = 0, {
       out <- purrr::map_dfr(df$file_path, ~{
         shiny::incProgress(1 / nrow(df))
+        
         process_one_file(
           .x,
           bodyparts_keep = if (length(bodyparts_keep)) bodyparts_keep else NULL,
           likelihood_min = likelihood_min,
-          threshold_px = input$threshold_px,
-          window_n = input$window_n
+          threshold_px   = input$threshold_px,
+          window_n       = input$window_n,
+          
+          # ✅ PASS YOUR JUMP FILTER UI VALUES
+          max_jump_px     = input$max_jump_px,
+          use_robust_jump = input$use_robust_jump,
+          robust_mult     = input$robust_mult
         )
       })
       processed_all(out)
@@ -372,25 +406,21 @@ server <- function(input, output, session) {
     )
   }, ignoreInit = TRUE)
   
-  
-  # Subset for chosen file
   processed_selected <- reactive({
     dat <- processed_all()
-    req(dat)
-    req(input$selected_file)
+    req(dat, input$selected_file)
     dat %>% filter(file_name == input$selected_file)
   })
   
-  # Summary table (mean moving speed per individual)
   summary_df <- reactive({
     dat <- processed_all()
     req(dat)
-    # if "mid" exists, default to it; otherwise keep all bodyparts and let user filter later
+    
     dat2 <- dat
     if ("mid" %in% unique(dat2$bodypart)) dat2 <- dat2 %>% filter(bodypart == "mid")
     
     dat2 %>%
-      filter(moving %in% TRUE) %>%
+      filter(moving %in% TRUE, !(is_big_jump %in% TRUE)) %>%
       group_by(group, file_name, individual) %>%
       summarise(mean_speed = mean(speed, na.rm = TRUE), .groups = "drop")
   })
@@ -398,19 +428,6 @@ server <- function(input, output, session) {
   output$summary_table <- renderDT({
     req(summary_df())
     datatable(summary_df(), options = list(pageLength = 10))
-  })
-  
-  # Allow user-defined group order for Dunnett
-  group_levels <- reactiveVal(NULL)
-  
-  observeEvent(input$apply_levels, {
-    s <- input$group_order
-    if (!nzchar(s)) {
-      group_levels(NULL)
-    } else {
-      lev <- str_split(s, ",")[[1]] %>% str_trim() %>% discard(~ .x == "")
-      group_levels(lev)
-    }
   })
   
   output$ref_group_ui <- renderUI({
@@ -424,7 +441,6 @@ server <- function(input, output, session) {
     df <- summary_df()
     req(df, input$ref_group)
     
-    # set the chosen reference as the first level
     df <- df %>%
       mutate(group = factor(group, levels = c(input$ref_group, setdiff(sort(unique(group)), input$ref_group))))
     
@@ -433,14 +449,11 @@ server <- function(input, output, session) {
     broom::tidy(gl)
   }, ignoreInit = TRUE)
   
-  
   output$dunnett_table <- renderDT({
     dat <- dunnett_res()
     req(dat)
     datatable(dat, options = list(pageLength = 10))
   })
-  
-  # ---- Plots ----
   
   output$traj_plotly <- renderPlotly({
     df <- processed_selected()
@@ -460,7 +473,8 @@ server <- function(input, output, session) {
       axis_title_size = input$axis_title_size,
       axis_text_size  = input$axis_text_size,
       strip_text_size = input$strip_text_size,
-      legend_position = if (input$legend_pos == "none") "none" else input$legend_pos
+      legend_position = if (input$legend_pos == "none") "none" else input$legend_pos,
+      drop_big_jumps = input$drop_big_jumps  # ✅ checkbox now controls this
     )
     
     ggplotly(p, dynamicTicks = TRUE) %>%
@@ -472,11 +486,10 @@ server <- function(input, output, session) {
       )
   })
   
-  
   output$traj_moving_plot <- renderPlot({
     df <- processed_selected()
     req(nrow(df) > 0)
-    dfm <- df %>% filter(moving %in% TRUE)
+    dfm <- df %>% filter(moving %in% TRUE, !(is_big_jump %in% TRUE))
     validate(need(nrow(dfm) > 0, "No moving frames after threshold/window settings."))
     xlim <- c(input$x_min, input$x_max)
     ylim <- c(input$y_min, input$y_max)
@@ -491,8 +504,6 @@ server <- function(input, output, session) {
     plot_speed_trace(df, ttl = ttl)
   })
   
-  # ---- Downloads ----
-  
   output$download_summary <- downloadHandler(
     filename = function() paste0("summary_mean_moving_speed_", Sys.Date(), ".csv"),
     content = function(file) {
@@ -506,7 +517,21 @@ server <- function(input, output, session) {
       df <- processed_selected()
       xlim <- c(input$x_min, input$x_max)
       ylim <- c(input$y_min, input$y_max)
-      p <- plot_trajectory(df, xlim = xlim, ylim = ylim, ttl = paste0("Trajectory: ", unique(df$title)))
+      
+      p <- plot_trajectory_coloured_segments(
+        df_long = df,
+        xlim = xlim, ylim = ylim,
+        ttl = paste0("Trajectory (moving segments coloured): ", unique(df$title)),
+        moving_col = input$moving_col,
+        still_col  = input$still_col,
+        line_width = input$line_width,
+        axis_title_size = input$axis_title_size,
+        axis_text_size  = input$axis_text_size,
+        strip_text_size = input$strip_text_size,
+        legend_position = if (input$legend_pos == "none") "none" else input$legend_pos,
+        drop_big_jumps = input$drop_big_jumps
+      )
+      
       ggsave(file, p, width = 10, height = 8, dpi = 300)
     }
   )
@@ -514,10 +539,11 @@ server <- function(input, output, session) {
   output$download_traj_moving <- downloadHandler(
     filename = function() paste0("trajectory_moving_", tools::file_path_sans_ext(input$selected_file), ".png"),
     content = function(file) {
-      df <- processed_selected() %>% filter(moving %in% TRUE)
+      df <- processed_selected() %>% filter(moving %in% TRUE, !(is_big_jump %in% TRUE))
       xlim <- c(input$x_min, input$x_max)
       ylim <- c(input$y_min, input$y_max)
-      p <- plot_trajectory(df, xlim = xlim, ylim = ylim, ttl = paste0("Trajectory (moving): ", unique(df$title)))
+      p <- plot_trajectory(df, xlim = xlim, ylim = ylim,
+                           ttl = paste0("Trajectory (moving): ", unique(df$title)))
       ggsave(file, p, width = 10, height = 8, dpi = 300)
     }
   )
@@ -530,7 +556,6 @@ server <- function(input, output, session) {
       ggsave(file, p, width = 12, height = 8, dpi = 300)
     }
   )
-  
 }
 
 shinyApp(ui, server)
