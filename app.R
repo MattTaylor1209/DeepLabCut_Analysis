@@ -45,11 +45,22 @@ ui <- fluidPage(
       
       tags$h4("Jump filtering"),
       checkboxInput("drop_big_jumps", "Drop big jumps in plots", value = TRUE),
-      numericInput("max_jump_px", "Max allowed step distance (px)", value = 50, min = 0, step = 5),
+      numericInput("max_jump_px", "Max allowed step distance (px)", value = 10, min = 0, step = 5),
       checkboxInput("use_robust_jump", "Use robust per-track threshold (median * multiplier)", value = FALSE),
       numericInput("robust_mult", "Robust multiplier", value = 10, min = 1, step = 1),
       checkboxInput("drop_bad_excursions", "Drop short excursions between big jumps", value = TRUE),
       numericInput("max_excursion_frames", "Max excursion length (frames)", value = 10, min = 1, step = 1),
+      
+      tags$h4("Speed QC"),
+      numericInput(
+        "max_speed",
+        "Max speed to keep (px/frame) — set NA to disable",
+        value = 20,
+        min = 0,
+        step = 1
+      ),
+      checkboxInput("drop_over_max_speed", "Drop speeds above max in plots + summary", value = TRUE),
+      
     
       tags$hr(),
       
@@ -234,11 +245,18 @@ server <- function(input, output, session) {
     dat2 <- dat
     if ("mid" %in% unique(dat2$bodypart)) dat2 <- dat2 %>% filter(bodypart == "mid")
     
+    dat2 <- apply_speed_cap(
+      dat2,
+      max_speed = input$max_speed,
+      enabled = input$drop_over_max_speed
+    )
+    
     dat2 %>%
       filter(moving %in% TRUE, !(is_big_jump %in% TRUE)) %>%
       group_by(group, file_name, individual) %>%
       summarise(mean_speed = mean(speed, na.rm = TRUE), .groups = "drop")
   })
+  
   
   output$summary_table <- renderDT({
     req(summary_df())
@@ -315,9 +333,17 @@ server <- function(input, output, session) {
   output$speed_plot <- renderPlot({
     df <- processed_selected()
     req(nrow(df) > 0)
+    
+    df <- apply_speed_cap(
+      df,
+      max_speed = input$max_speed,
+      enabled = input$drop_over_max_speed
+    )
+    
     ttl <- paste0("Speed trace: ", unique(df$title))
     plot_speed_trace(df, ttl = ttl)
   })
+  
   
   output$download_summary <- downloadHandler(
     filename = function() paste0("summary_mean_moving_speed_", Sys.Date(), ".csv"),

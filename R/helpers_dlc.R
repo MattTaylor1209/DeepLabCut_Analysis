@@ -157,6 +157,13 @@ add_movement_flag <- function(df_long, threshold_px = 2, window_n = 5) {
     ungroup()
 }
 
+apply_speed_cap <- function(df_long, max_speed = NULL, enabled = TRUE) {
+  if (!enabled) return(df_long)
+  if (is.null(max_speed) || is.na(max_speed)) return(df_long)
+  df_long %>% dplyr::filter(is.na(speed) | speed <= max_speed)
+}
+
+
 extract_group <- function(file_name) {
   grp <- stringr::str_extract(file_name, "^.*(?=_[0-9]+DLC)")
   if (is.na(grp)) {
