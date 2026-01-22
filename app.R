@@ -41,7 +41,7 @@ ui <- fluidPage(
       ),
       numericInput("likelihood_min", "Min likelihood (optional)", value = NA, min = 0, max = 1, step = 0.01),
       numericInput("threshold_px", "Movement threshold (px/frame)", value = 2, min = 0, step = 0.1),
-      numericInput("window_n", "Stillness window (frames)", value = 5, min = 1, step = 1),
+      numericInput("window_n", "Stillness window (frames)", value = 10, min = 1, step = 1),
       
       tags$h4("Jump filtering"),
       checkboxInput("drop_big_jumps", "Drop big jumps in plots", value = TRUE),
