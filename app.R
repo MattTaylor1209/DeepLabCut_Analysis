@@ -17,6 +17,9 @@ library(LearnGeom)
 
 source("R/helpers_dlc.R")
 
+options(shiny.maxRequestSize = 200 * 1024^2)  # 200 MB
+
+
 # ----------------------------
 # Shiny app
 # ----------------------------
@@ -35,10 +38,36 @@ ui <- fluidPage(
   
   sidebarLayout(
     sidebarPanel(
-      tags$h4("1) Choose folder"),
-      shinyDirButton("dir", "Select folder", "Choose folder containing *filtered.csv"),
-      verbatimTextOutput("folder_txt"),
+      tags$h4("1) Get data"),
+      
+      radioButtons(
+        "data_source",
+        "Data source",
+        choices = c(
+          "Local folder (desktop)" = "folder",
+          "Upload filtered.csv files (shinyapps.io)" = "upload"
+        ),
+        selected = "folder"
+      ),
+      
+      conditionalPanel(
+        condition = "input.data_source == 'folder'",
+        shinyDirButton("dir", "Select folder", "Choose folder containing *filtered.csv"),
+        verbatimTextOutput("folder_txt")
+      ),
+      
+      conditionalPanel(
+        condition = "input.data_source == 'upload'",
+        fileInput(
+          "upload_files",
+          "Upload one or more *filtered.csv* files",
+          multiple = TRUE,
+          accept = c(".csv")
+        )
+      ),
+      
       tags$hr(),
+      
       
       tags$h4("2) Processing settings"),
       textInput("pattern", "File pattern", value = "filtered.csv"),
@@ -164,15 +193,28 @@ server <- function(input, output, session) {
   })
   
   files_df <- reactive({
-    d <- chosen_dir()
-    req(d)
-    pat <- input$pattern
-    paths <- list.files(d, pattern = pat, full.names = TRUE)
-    tibble(
-      file_name = basename(paths),
-      file_path = paths
-    ) %>% arrange(file_name)
+    src <- input$data_source
+    
+    if (src == "upload") {
+      req(input$upload_files)
+      # shiny provides temp file paths in datapath
+      tibble(
+        file_name = input$upload_files$name,
+        file_path = input$upload_files$datapath
+      ) %>% arrange(file_name)
+      
+    } else {
+      d <- chosen_dir()
+      req(d)
+      pat <- input$pattern
+      paths <- list.files(d, pattern = pat, full.names = TRUE)
+      tibble(
+        file_name = basename(paths),
+        file_path = paths
+      ) %>% arrange(file_name)
+    }
   })
+  
   
   bodyparts_available <- reactive({
     df <- files_df()
