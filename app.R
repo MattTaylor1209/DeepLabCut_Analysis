@@ -34,11 +34,11 @@ options(shiny.maxRequestSize = 200 * 1024^2)  # 200 MB
 # Pause duration
 
 ui <- fluidPage(
-  shinythemes::themeSelector(),
   titlePanel("DeepLabCut CSV Explorer (filtered.csv)"),
   
   sidebarLayout(
     sidebarPanel(
+      width = 3,
       tags$h4("1) Get data"),
       
       radioButtons(
@@ -135,7 +135,8 @@ ui <- fluidPage(
       tags$br(), tags$br(),
       uiOutput("file_picker_ui"),
       tags$hr(),
-      downloadButton("download_summary", "Download summary CSV")
+      downloadButton("download_summary", "Download summary CSV"),
+      shinythemes::themeSelector()
     ),
     
     mainPanel(
@@ -145,10 +146,10 @@ ui <- fluidPage(
                  DTOutput("files_table")
         ),
         tabPanel("Trajectory",
-                 plotlyOutput("traj_plotly", height = 700),
+                 plotlyOutput("traj_plotly", height = 1000),
                  downloadButton("download_traj", "Download trajectory plot (PNG)")
         ),
-        tabPanel("Trajectory (moving only)",
+        tabPanel("Trajectory (moving only) NOT IN USE",
                  plotOutput("traj_moving_plot", height = 700),
                  downloadButton("download_traj_moving", "Download moving-only plot (PNG)")
         ),
@@ -340,7 +341,9 @@ server <- function(input, output, session) {
     dat2 %>%
       filter(moving %in% TRUE, !(is_big_jump %in% TRUE)) %>%
       group_by(group, file_name, individual) %>%
-      summarise(mean_speed = mean(speed, na.rm = TRUE), .groups = "drop")
+      summarise(mean_speed = mean(speed, na.rm = TRUE), 
+                median_speed = median(speed, na.rm = TRUE),
+                .groups = "drop")
   })
   
   

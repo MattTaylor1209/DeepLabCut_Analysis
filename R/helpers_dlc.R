@@ -301,7 +301,8 @@ process_one_file <- function(path,
     )
     
     df_long <- df_long %>%
-      left_join(ang, by = c("frame", "individual"))
+      left_join(ang, by = c("frame", "individual")) %>%
+      flag_head_swing(swing_deg = 40)
   }
   
   df_long %>%
@@ -412,7 +413,16 @@ plot_trajectory_coloured_segments <- function(df_long,
 
 plot_angle_trace <- function(df_long, ttl = "") {
   ggplot(df_long, aes(x = frame, y = angle)) +
-    geom_line(alpha = 0.6) +
+    geom_point(aes(group = interaction(individual), colour = head_swing), alpha = 0.7)+
+    geom_line(alpha = 0.6, linetype = "longdash")+
+    scale_colour_manual(values = c(`TRUE` = "red", `FALSE` = "black"), na.value = "black") +
+    guides(colour = "none") +
+    annotate(
+      "rect",
+      xmin = -Inf, xmax = Inf,   # full width of panel
+      ymin = 140,    ymax = 220,     # between your horizontal lines
+      alpha = 0.15               # transparency
+    ) +
     geom_hline(yintercept = 180, colour = "red3", linetype = "dashed")+
     facet_wrap(~ individual, ncol = 2, scales = "free_y") +
     theme_minimal(base_size = 14) +
@@ -447,3 +457,18 @@ set_all_subplot_ranges <- function(p, x_range = NULL, y_range = NULL) {
   b
 }
 
+# Head swings
+
+flag_head_swing <- function(df_long, swing_deg = 40) {
+  if (!"angle" %in% names(df_long)) return(df_long)
+  
+  centre <- 180
+  tol <- 40
+  low <- centre - tol
+  high <- centre + tol
+  
+  df_long <- df_long %>%
+    mutate(
+      head_swing = !is.na(angle) & (angle < low | angle > high)
+    )
+}
