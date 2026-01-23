@@ -26,6 +26,7 @@ options(shiny.maxRequestSize = 200 * 1024^2)  # 200 MB
 
 # To add
 # Angles/headswings
+# toggle to invert y axis
 # Time moving
 # Distance traveled
 # Rolling?
@@ -116,6 +117,7 @@ ui <- fluidPage(
       numericInput("x_max", "x max", value = 1280),
       numericInput("y_min", "y min", value = 0),
       numericInput("y_max", "y max", value = 960),
+      checkboxInput("flip_y", "Flip Y axis (image coordinates)", value = TRUE),
       
       tags$h4("Trajectory styling"),
       colourInput("moving_col", "Moving colour", value = "#11F011"),
@@ -376,13 +378,15 @@ server <- function(input, output, session) {
     df <- processed_selected()
     req(nrow(df) > 0)
     
-    xlim <- c(input$x_min, input$x_max)
-    ylim <- c(input$y_min, input$y_max)
-    ttl  <- paste0("Trajectory (moving segments coloured): ", unique(df$title))
+    x_range <- c(input$x_min, input$x_max)
+    y_range <- if (isTRUE(input$flip_y)) c(input$y_max, input$y_min) else c(input$y_min, input$y_max)
     
-    p <- plot_trajectory_coloured_segments(
+    
+    ttl <- paste0("Trajectory (moving segments coloured): ", unique(df$title))
+    
+    g <- plot_trajectory_coloured_segments(
       df_long = df,
-      xlim = xlim, ylim = ylim,
+      xlim = x_range, ylim = y_range,
       ttl = ttl,
       moving_col = input$moving_col,
       still_col  = input$still_col,
@@ -391,17 +395,20 @@ server <- function(input, output, session) {
       axis_text_size  = input$axis_text_size,
       strip_text_size = input$strip_text_size,
       legend_position = if (input$legend_pos == "none") "none" else input$legend_pos,
-      drop_big_jumps = input$drop_big_jumps  # ✅ checkbox now controls this
+      drop_big_jumps = input$drop_big_jumps
     )
     
-    ggplotly(p, dynamicTicks = TRUE) %>%
+    p <- ggplotly(g, dynamicTicks = TRUE) %>%
       layout(dragmode = "zoom") %>%
       config(
         displaylogo = FALSE,
         scrollZoom = TRUE,
         modeBarButtonsToAdd = c("zoom2d","pan2d","select2d","lasso2d","resetScale2d")
       )
+    
+    set_all_subplot_ranges(p, x_range = x_range, y_range = y_range)
   })
+  
   
   output$traj_moving_plot <- renderPlot({
     df <- processed_selected()

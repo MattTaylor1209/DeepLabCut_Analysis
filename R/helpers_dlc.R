@@ -389,3 +389,31 @@ plot_angle_trace <- function(df_long, ttl = "") {
     theme(plot.title = element_text(face = "bold", hjust = 0.5)) +
     labs(title = ttl, x = "Frame", y = "Angle (degrees)")
 }
+
+
+
+set_all_subplot_ranges <- function(p, x_range = NULL, y_range = NULL) {
+  b <- plotly::plotly_build(p)
+  
+  lay_names <- names(b$x$layout)
+  
+  x_axes <- grep("^xaxis", lay_names, value = TRUE)
+  y_axes <- grep("^yaxis", lay_names, value = TRUE)
+  
+  if (!is.null(x_range)) {
+    for (ax in x_axes) {
+      b$x$layout[[ax]]$range <- x_range
+      b$x$layout[[ax]]$autorange <- FALSE
+    }
+  }
+  
+  if (!is.null(y_range)) {
+    for (ax in y_axes) {
+      b$x$layout[[ax]]$range <- y_range
+      b$x$layout[[ax]]$autorange <- FALSE
+    }
+  }
+  
+  b
+}
+
