@@ -131,7 +131,12 @@ angle_deg <- function(A, B, C) {
 }
 
 
-compute_angles <- function(df_long, parts3, vertex = parts3[2]) {
+compute_angles <- function(df_long,
+                           parts3,
+                           vertex = parts3[2],
+                           drop_big_jump_frames = TRUE,
+                           drop_bad_excursions = TRUE) {
+  
   stopifnot(length(parts3) == 3, vertex %in% parts3)
   
   others <- setdiff(parts3, vertex)
@@ -141,37 +146,40 @@ compute_angles <- function(df_long, parts3, vertex = parts3[2]) {
   
   df_wide <- df_long %>%
     filter(bodypart %in% parts3) %>%
-    select(frame, individual, bodypart, x, y) %>%
+    select(frame, individual, bodypart, x, y, is_big_jump, bad_excursion) %>%
     tidyr::pivot_wider(
       names_from = bodypart,
-      values_from = c(x, y),
+      values_from = c(x, y, is_big_jump, bad_excursion),
       names_glue = "{bodypart}_{.value}"
     )
-  
-  needed <- c(
-    paste0(A_name, c("_x","_y")),
-    paste0(B_name, c("_x","_y")),
-    paste0(C_name, c("_x","_y"))
-  )
-  if (!all(needed %in% names(df_wide))) {
-    return(df_wide %>% transmute(frame, individual, angle = NA_real_))
-  }
   
   ax <- paste0(A_name, "_x"); ay <- paste0(A_name, "_y")
   bx <- paste0(B_name, "_x"); by <- paste0(B_name, "_y")
   cx <- paste0(C_name, "_x"); cy <- paste0(C_name, "_y")
   
-  df_wide %>%
+  # any of the 3 points flagged on this frame?
+  bj_cols <- paste0(parts3, "_is_big_jump")
+  be_cols <- paste0(parts3, "_bad_excursion")
+  
+  df_wide <- df_wide %>%
     mutate(
-      angle = purrr::pmap_dbl(
-        list(.data[[ax]], .data[[ay]],
-             .data[[bx]], .data[[by]],
-             .data[[cx]], .data[[cy]]),
-        ~ angle_deg(c(..1, ..2), c(..3, ..4), c(..5, ..6))
+      any_big_jump   = if (drop_big_jump_frames) rowSums(across(all_of(bj_cols), ~ .x %in% TRUE), na.rm = TRUE) > 0 else FALSE,
+      any_excursion  = if (drop_bad_excursions)  rowSums(across(all_of(be_cols), ~ .x %in% TRUE), na.rm = TRUE) > 0 else FALSE,
+      angle = dplyr::if_else(
+        any_big_jump | any_excursion,
+        NA_real_,
+        purrr::pmap_dbl(
+          list(.data[[ax]], .data[[ay]],
+               .data[[bx]], .data[[by]],
+               .data[[cx]], .data[[cy]]),
+          ~ angle_deg(c(..1, ..2), c(..3, ..4), c(..5, ..6))
+        )
       )
-    ) %>%
-    select(frame, individual, angle)
+    )
+  
+  df_wide %>% select(frame, individual, angle)
 }
+
 
 
 
@@ -275,10 +283,22 @@ process_one_file <- function(path,
     add_movement_flag(threshold_px = threshold_px, window_n = window_n)
   
   # --- compute angle if requested and exactly 3 parts selected
+  #     IMPORTANT: compute_angles() must censor frames where ANY of the 3 parts is flagged
   if (isTRUE(compute_angle) && !is.null(bodyparts_keep) && length(bodyparts_keep) == 3) {
-    vtx <- if (!is.null(angle_vertex) && angle_vertex %in% bodyparts_keep) angle_vertex else bodyparts_keep[2]
     
-    ang <- compute_angles(df_long, parts3 = bodyparts_keep, vertex = vtx)
+    vtx <- if (!is.null(angle_vertex) && angle_vertex %in% bodyparts_keep) {
+      angle_vertex
+    } else {
+      bodyparts_keep[2]
+    }
+    
+    ang <- compute_angles(
+      df_long,
+      parts3 = bodyparts_keep,
+      vertex = vtx,
+      drop_big_jump_frames = TRUE,
+      drop_bad_excursions  = TRUE
+    )
     
     df_long <- df_long %>%
       left_join(ang, by = c("frame", "individual"))
@@ -292,6 +312,7 @@ process_one_file <- function(path,
       group = extract_group(fn)
     )
 }
+
 
 
 
