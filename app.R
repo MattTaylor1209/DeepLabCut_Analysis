@@ -484,6 +484,14 @@ server <- function(input, output, session) {
     filename = function() paste0("speed_", tools::file_path_sans_ext(input$selected_file), ".png"),
     content = function(file) {
       df <- processed_selected()
+      req(nrow(df) > 0)
+      
+      df <- apply_speed_cap(
+        df,
+        max_speed = input$max_speed,
+        enabled = input$drop_over_max_speed
+      )
+      
       p <- plot_speed_trace(df, ttl = paste0("Speed trace: ", unique(df$title)))
       ggsave(file, p, width = 12, height = 8, dpi = 300)
     }
