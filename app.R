@@ -97,7 +97,7 @@ ui <- fluidPage(
       tags$h4("Speed QC"),
       numericInput(
         "max_speed",
-        "Max speed to keep (px/frame) — set NA to disable",
+        "Max speed to keep (px/frame)",
         value = 20,
         min = 0,
         step = 1

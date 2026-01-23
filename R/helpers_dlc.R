@@ -320,19 +320,28 @@ plot_speed_trace <- function(df_long, ttl = "") {
 }
 
 make_segments <- function(df_long, drop_big_jumps = TRUE) {
-  df_long %>%
+  seg <- df_long %>%
     arrange(individual, bodypart, frame) %>%
     group_by(individual, bodypart) %>%
     mutate(
       xend = lead(x),
       yend = lead(y),
+      
+      # segment distance for the segment we actually draw (t -> t+1)
+      seg_dist = sqrt((xend - x)^2 + (yend - y)^2),
+      
       moving_seg = moving,
-      big_jump_seg = is_big_jump %in% TRUE
+      
+      # use threshold 'thr' computed earlier (same scale as dist)
+      big_jump_seg = seg_dist > thr
     ) %>%
     ungroup() %>%
-    filter(!is.na(xend), !is.na(yend)) %>%
-    { if (drop_big_jumps) dplyr::filter(., !big_jump_seg) else . }
+    filter(!is.na(xend), !is.na(yend))
+  
+  if (drop_big_jumps) seg <- dplyr::filter(seg, !big_jump_seg)
+  seg
 }
+
 
 plot_trajectory_coloured_segments <- function(df_long,
                                               xlim = c(0, 1280),
