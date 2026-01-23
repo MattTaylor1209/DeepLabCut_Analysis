@@ -181,6 +181,17 @@ server <- function(input, output, session) {
   
   chosen_dir <- reactiveVal(NULL)
   
+  uploaded_paths <- reactive({
+    req(input$upload_files)
+    input$upload_files$datapath   # temp file paths on the server
+  })
+  
+  uploaded_names <- reactive({
+    req(input$upload_files)
+    input$upload_files$name
+  })
+  
+  
   observeEvent(input$dir, {
     dir <- parseDirPath(volumes, input$dir)
     if (length(dir) && nzchar(dir)) chosen_dir(dir)
@@ -197,10 +208,9 @@ server <- function(input, output, session) {
     
     if (src == "upload") {
       req(input$upload_files)
-      # shiny provides temp file paths in datapath
       tibble(
-        file_name = input$upload_files$name,
-        file_path = input$upload_files$datapath
+        file_name = uploaded_names(),
+        file_path = uploaded_paths()
       ) %>% arrange(file_name)
       
     } else {
@@ -276,17 +286,16 @@ server <- function(input, output, session) {
     likelihood_min <- if (is.na(input$likelihood_min)) NULL else input$likelihood_min
     
     shiny::withProgress(message = "Processing files...", value = 0, {
-      out <- purrr::map_dfr(df$file_path, ~{
+      out <- purrr::map2_dfr(df$file_path, df$file_name, ~{
         shiny::incProgress(1 / nrow(df))
         
         process_one_file(
-          .x,
+          path = .x,
+          file_name = .y,   # ✅ preserves original upload name
           bodyparts_keep = if (length(bodyparts_keep)) bodyparts_keep else NULL,
           likelihood_min = likelihood_min,
           threshold_px   = input$threshold_px,
           window_n       = input$window_n,
-          
-          # ✅ PASS YOUR JUMP FILTER UI VALUES
           max_jump_px     = input$max_jump_px,
           use_robust_jump = input$use_robust_jump,
           robust_mult     = input$robust_mult,
@@ -295,6 +304,7 @@ server <- function(input, output, session) {
           angle_vertex    = input$angle_vertex
         )
       })
+      
       processed_all(out)
     })
     
@@ -304,6 +314,7 @@ server <- function(input, output, session) {
       duration = 4
     )
   }, ignoreInit = TRUE)
+  
   
   processed_selected <- reactive({
     dat <- processed_all()

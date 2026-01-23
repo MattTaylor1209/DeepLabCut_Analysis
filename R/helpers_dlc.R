@@ -246,6 +246,7 @@ extract_title <- function(file_name) {
 }
 
 process_one_file <- function(path,
+                             file_name = NULL,
                              bodyparts_keep = c("mid"),
                              likelihood_min = NULL,
                              threshold_px = 2,
@@ -257,34 +258,13 @@ process_one_file <- function(path,
                              compute_angle = FALSE,
                              angle_vertex = NULL) {
   
-  fn <- basename(path)
+  fn <- if (!is.null(file_name) && nzchar(file_name)) file_name else basename(path)
+  
   df_raw <- read_dlc_filtered_csv(path)
   if (is.null(df_raw)) return(NULL)
   
-  # 1) df_long created here (THIS is what angles should use)
-  df_long <- tidy_dlc(df_raw, bodyparts_keep = bodyparts_keep, likelihood_min = likelihood_min)
-  
-  # 2) Optionally compute angle from df_long (NOT df_raw)
-  if (isTRUE(compute_angle) && !is.null(bodyparts_keep) && length(bodyparts_keep) == 3) {
-    
-    vertex <- if (!is.null(angle_vertex) && angle_vertex %in% bodyparts_keep) {
-      angle_vertex
-    } else {
-      bodyparts_keep[2]  # default: middle selection is vertex
-    }
-    
-    angle_tbl <- compute_angles(df_long, parts3 = bodyparts_keep, vertex = vertex)
-    
-    # join angle back onto df_long so it flows through the rest of your pipeline
-    df_long <- df_long %>%
-      left_join(angle_tbl, by = c("frame", "individual"))
-    
-  } else {
-    df_long <- df_long %>% mutate(angle = NA_real_)
-  }
-  
-  # 3) Continue pipeline as normal
-  df_long %>%
+  df_long <- df_raw %>%
+    tidy_dlc(bodyparts_keep = bodyparts_keep, likelihood_min = likelihood_min) %>%
     add_speed() %>%
     filter_big_jumps(
       max_jump_px = max_jump_px,
@@ -292,7 +272,19 @@ process_one_file <- function(path,
       robust_mult = robust_mult
     ) %>%
     flag_short_excursions(max_excursion_frames = max_excursion_frames) %>%
-    add_movement_flag(threshold_px = threshold_px, window_n = window_n) %>%
+    add_movement_flag(threshold_px = threshold_px, window_n = window_n)
+  
+  # --- compute angle if requested and exactly 3 parts selected
+  if (isTRUE(compute_angle) && !is.null(bodyparts_keep) && length(bodyparts_keep) == 3) {
+    vtx <- if (!is.null(angle_vertex) && angle_vertex %in% bodyparts_keep) angle_vertex else bodyparts_keep[2]
+    
+    ang <- compute_angles(df_long, parts3 = bodyparts_keep, vertex = vtx)
+    
+    df_long <- df_long %>%
+      left_join(ang, by = c("frame", "individual"))
+  }
+  
+  df_long %>%
     mutate(
       file_path = path,
       file_name = fn,
@@ -300,6 +292,9 @@ process_one_file <- function(path,
       group = extract_group(fn)
     )
 }
+
+
+
 
 plot_trajectory <- function(df_long, xlim = c(0, 1280), ylim = c(0, 960), ttl = "") {
   ggplot(df_long, aes(x = x, y = y, colour = bodypart)) +
