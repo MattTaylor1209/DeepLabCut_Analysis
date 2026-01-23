@@ -168,6 +168,7 @@ ui <- fluidPage(
         ),
         tabPanel("Dunnett vs reference",
                  uiOutput("ref_group_ui"),
+                 checkboxInput("use_median_dunnett", "Use median for stats", value = FALSE),
                  actionButton("run_dunnett", "Run Dunnett"),
                  tags$br(), tags$br(),
                  DTOutput("dunnett_table")
@@ -366,7 +367,12 @@ server <- function(input, output, session) {
     df <- df %>%
       mutate(group = factor(group, levels = c(input$ref_group, setdiff(sort(unique(group)), input$ref_group))))
     
-    aov_fit <- aov(mean_speed ~ group, data = df)
+    if(input$use_median_dunnett == TRUE) {
+      aov_fit <- aov(median_speed ~ group, data = df)
+    }
+    else {
+      aov_fit <- aov(mean_speed ~ group, data = df)
+    }
     gl <- multcomp::glht(aov_fit, linfct = multcomp::mcp(group = "Dunnett"))
     broom::tidy(gl)
   }, ignoreInit = TRUE)
