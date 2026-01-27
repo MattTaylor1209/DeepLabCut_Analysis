@@ -424,7 +424,10 @@ plot_trajectory_coloured_segments <- function(df_long,
     )
   
   ggplot(seg, aes(x = x, y = y, xend = xend, yend = yend)) +
-    geom_segment(aes(colour = moving_seg), linewidth = line_width, alpha = 0.9) +
+    geom_segment(aes(colour = moving_seg,
+                     linetype = bodypart), 
+                 linewidth = line_width, 
+                 alpha = 0.9) +
     facet_wrap(~ individual, ncol = 2) +
     coord_fixed(xlim = xlim, ylim = ylim) +
     scale_colour_manual(
