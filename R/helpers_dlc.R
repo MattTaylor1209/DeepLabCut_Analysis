@@ -223,8 +223,9 @@ flag_short_excursions <- function(df_long, max_excursion_frames = 10) {
     ungroup()
 }
 
-###---Function to flag frames as whether body part has moved or not---###
-add_movement_flag <- function(df_long, threshold_px = 2, window_n = 5) {
+###---Function to flag frames as whether body part has moved or not and
+#whether frames are near the start or end of track (not fully used yet)---###
+add_movement_flag <- function(df_long, threshold_px = 2, window_n = 5, edge_n = 5) {
   df_long %>%
     group_by(individual, bodypart) %>%
     arrange(frame, .by_group = TRUE) %>%
@@ -240,10 +241,23 @@ add_movement_flag <- function(df_long, threshold_px = 2, window_n = 5) {
         is.na(still_count) ~ NA,
         still_count == window_n ~ FALSE,
         TRUE ~ TRUE
-      )
+      ),
+      
+      .row_in_track = dplyr::row_number(),
+      .n_in_track   = dplyr::n(),
+      
+      edge_flag = dplyr::case_when(
+        .n_in_track <= 2 * edge_n ~ "START",
+        .row_in_track <= edge_n ~ "START",
+        .row_in_track > .n_in_track - edge_n ~ "END",
+        TRUE ~ NA_character_
+      ),
+      edge_flag = factor(edge_flag, levels = c("START", "END"))
     ) %>%
+    select(-.row_in_track, -.n_in_track) %>%
     ungroup()
 }
+
 
 ###---Function to apply the speed cap to the data---###
 apply_speed_cap <- function(df_long, max_speed = NULL, enabled = TRUE) {
@@ -402,11 +416,11 @@ plot_trajectory_coloured_segments <- function(df_long,
   seg <- seg %>%
     mutate(
       moving_seg = dplyr::case_when(
-        is.na(moving_seg) ~ "Unknown",
+        is.na(moving_seg) ~ "Start",
         moving_seg ~ "Moving",
         TRUE ~ "Still"
       ),
-      moving_seg = factor(moving_seg, levels = c("Moving", "Still", "Unknown"))
+      moving_seg = factor(moving_seg, levels = c("Moving", "Still", "Start"))
     )
   
   ggplot(seg, aes(x = x, y = y, xend = xend, yend = yend)) +
@@ -414,7 +428,7 @@ plot_trajectory_coloured_segments <- function(df_long,
     facet_wrap(~ individual, ncol = 2) +
     coord_fixed(xlim = xlim, ylim = ylim) +
     scale_colour_manual(
-      values = c(Moving = moving_col, Still = still_col, Unknown = "black"),
+      values = c(Moving = moving_col, Still = still_col, Start = "black"),
       drop = FALSE
     ) +
     theme_minimal(base_size = 14) +
