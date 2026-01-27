@@ -12,8 +12,6 @@ library(multcomp)
 library(broom)
 library(colourpicker)
 library(plotly)
-library(LearnGeom)
-
 
 source("R/helpers_dlc.R")
 
@@ -34,6 +32,7 @@ options(shiny.maxRequestSize = 200 * 1024^2)  # 200 MB
 # Pause duration
 
 ui <- fluidPage(
+  theme = shinytheme("simplex"),
   titlePanel("DeepLabCut CSV Explorer (filtered.csv)"),
   
   sidebarLayout(
@@ -135,8 +134,7 @@ ui <- fluidPage(
       tags$br(), tags$br(),
       uiOutput("file_picker_ui"),
       tags$hr(),
-      downloadButton("download_summary", "Download summary CSV"),
-      shinythemes::themeSelector()
+      downloadButton("download_summary", "Download summary CSV")
     ),
     
     mainPanel(

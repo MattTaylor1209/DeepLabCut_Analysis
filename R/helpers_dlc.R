@@ -6,10 +6,15 @@
 # Helper functions (pipeline)
 # ----------------------------
 
+
+###----Function to in the data and create raw data frame---###
 read_dlc_filtered_csv <- function(path) {
+  # All filtered.csv files from DeepLabCut should have the same format
+  # Check if the first 4 lines are headers and read them
   header_lines <- readLines(path, n = 4, warn = FALSE)
   if (length(header_lines) < 4) return(NULL)
   
+  # The following information should correspond to the first 4 lines
   scorer      <- str_split(header_lines[1], ",")[[1]]
   individuals <- str_split(header_lines[2], ",")[[1]]
   bodyparts   <- str_split(header_lines[3], ",")[[1]]
@@ -24,9 +29,10 @@ read_dlc_filtered_csv <- function(path) {
   multi_names <- paste(individuals[-1], bodyparts[-1], coords[-1], sep = "_")
   all_colnames <- c("frame", multi_names)
   
+  # Build the raw data frame
   df_raw <- readr::read_csv(
     path,
-    skip = 4,               # <-- IMPORTANT (skip coords too)
+    skip = 4,               
     col_names = FALSE,
     show_col_types = FALSE,
     progress = FALSE
@@ -40,14 +46,16 @@ read_dlc_filtered_csv <- function(path) {
     df_raw <- df_raw[, seq_len(length(all_colnames))]
   }
   
+  # Set the column names of the raw data frame
   colnames(df_raw) <- all_colnames
   
+  # Make values numeric
   df_raw %>%
     mutate(frame = suppressWarnings(as.integer(frame))) %>%
     mutate(across(-frame, ~ suppressWarnings(as.numeric(.x))))
 }
 
-
+###---Function to get the names of the body parts---###
 get_dlc_bodyparts <- function(path) {
   hdr <- readLines(path, n = 3, warn = FALSE)
   if (length(hdr) < 3) return(character(0))
@@ -58,7 +66,7 @@ get_dlc_bodyparts <- function(path) {
   unique(bp)
 }
 
-
+###---Function to convert raw data frame to long format---###
 tidy_dlc <- function(df_raw, bodyparts_keep = NULL, likelihood_min = NULL) {
   df_long <- df_raw %>%
     pivot_longer(-frame, names_to = "key", values_to = "value") %>%
@@ -78,6 +86,8 @@ tidy_dlc <- function(df_raw, bodyparts_keep = NULL, likelihood_min = NULL) {
   df_long
 }
 
+
+###---Function to calculate speed per frame and add to long data---###
 add_speed <- function(df_long) {
   df_long %>%
     group_by(individual, bodypart) %>%
@@ -92,6 +102,7 @@ add_speed <- function(df_long) {
     ungroup()
 }
 
+###---Function to flag big pixel jumps due to poor tracking---###
 filter_big_jumps <- function(df_long,
                              max_jump_px = 50,
                              use_robust_jump = FALSE,
@@ -107,8 +118,7 @@ filter_big_jumps <- function(df_long,
 }
 
 
-# Calculate angle between 3 body parts
-
+###---Function to calculate angle between 3 body parts in degrees---###
 angle_deg <- function(A, B, C) {
   # A, B, C are numeric vectors length 2: c(x, y)
   BA <- A - B
@@ -130,7 +140,7 @@ angle_deg <- function(A, B, C) {
   ang_deg
 }
 
-
+###---Function to apply angle calculation to data and add to wide data frame---###
 compute_angles <- function(df_long,
                            parts3,
                            vertex = parts3[2],
@@ -182,7 +192,8 @@ compute_angles <- function(df_long,
 
 
 
-
+###---Function to flag short excursion e.g., where the tracking jumps to new
+#area for few frames, then jumps back again---###
 flag_short_excursions <- function(df_long, max_excursion_frames = 10) {
   # Needs: columns x, y, frame, individual, bodypart, and 'thr' from filter_big_jumps()
   df_long %>%
@@ -212,7 +223,7 @@ flag_short_excursions <- function(df_long, max_excursion_frames = 10) {
     ungroup()
 }
 
-
+###---Function to flag frames as whether body part has moved or not---###
 add_movement_flag <- function(df_long, threshold_px = 2, window_n = 5) {
   df_long %>%
     group_by(individual, bodypart) %>%
@@ -234,13 +245,14 @@ add_movement_flag <- function(df_long, threshold_px = 2, window_n = 5) {
     ungroup()
 }
 
+###---Function to apply the speed cap to the data---###
 apply_speed_cap <- function(df_long, max_speed = NULL, enabled = TRUE) {
   if (!enabled) return(df_long)
   if (is.null(max_speed) || is.na(max_speed)) return(df_long)
   df_long %>% dplyr::filter(is.na(speed) | speed <= max_speed)
 }
 
-
+###---Function to extract group name from the filtered.csv file name---###
 extract_group <- function(file_name) {
   grp <- stringr::str_extract(file_name, "^.*(?=_[0-9]+DLC)")
   if (is.na(grp)) {
@@ -249,10 +261,13 @@ extract_group <- function(file_name) {
   grp
 }
 
+###---Function to extract title from the file name---###
 extract_title <- function(file_name) {
   extract_group(file_name)
 }
 
+
+###---Cumulative function which applies above functions to one filtered.csv file---###
 process_one_file <- function(path,
                              file_name = NULL,
                              bodyparts_keep = c("mid"),
@@ -317,7 +332,7 @@ process_one_file <- function(path,
 
 
 
-
+###---Plot trajectory (basic)---###
 plot_trajectory <- function(df_long, xlim = c(0, 1280), ylim = c(0, 960), ttl = "") {
   ggplot(df_long, aes(x = x, y = y, colour = bodypart)) +
     geom_path(linewidth = 0.4, alpha = 0.85) +
@@ -332,6 +347,7 @@ plot_trajectory <- function(df_long, xlim = c(0, 1280), ylim = c(0, 960), ttl = 
     labs(title = ttl, x = "x (px)", y = "y (px)", colour = "Bodypart")
 }
 
+###---Plot speed trace---###
 plot_speed_trace <- function(df_long, ttl = "") {
   ggplot(df_long, aes(x = frame, y = speed)) +
     geom_line(alpha = 0.6) +
@@ -341,6 +357,9 @@ plot_speed_trace <- function(df_long, ttl = "") {
     labs(title = ttl, x = "Frame", y = "Speed (px/frame)")
 }
 
+
+###---Make coloured segments depending on if body part moving, filtering out 
+#jumps etc---###
 make_segments <- function(df_long, drop_big_jumps = TRUE) {
   seg <- df_long %>%
     arrange(individual, bodypart, frame) %>%
@@ -364,7 +383,7 @@ make_segments <- function(df_long, drop_big_jumps = TRUE) {
   seg
 }
 
-
+###---Plot trajectory segments coloured by moving vs still---###
 plot_trajectory_coloured_segments <- function(df_long,
                                               xlim = c(0, 1280),
                                               ylim = c(0, 960),
@@ -411,6 +430,7 @@ plot_trajectory_coloured_segments <- function(df_long,
 }
 
 
+###---Plot body angle over time---###
 plot_angle_trace <- function(df_long, ttl = "") {
   ggplot(df_long, aes(x = frame, y = angle)) +
     geom_point(aes(group = interaction(individual), colour = head_swing), alpha = 0.7)+
@@ -457,8 +477,7 @@ set_all_subplot_ranges <- function(p, x_range = NULL, y_range = NULL) {
   b
 }
 
-# Head swings
-
+###--- Flag head swings (WIP)---###
 flag_head_swing <- function(df_long, swing_deg = 40) {
   if (!"angle" %in% names(df_long)) return(df_long)
   
