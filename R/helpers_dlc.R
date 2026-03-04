@@ -7,44 +7,80 @@
 # ----------------------------
 
 
-###----Function to in the data and create raw data frame---###
+# ----------------------------
+# DLC CSV format detection + reading
+# ----------------------------
+
 detect_dlc_format <- function(path) {
-  # Heuristic:
-  # Multi-animal DLC filtered.csv typically has 4 header rows:
-  #   scorer / individuals / bodyparts / coords
-  # Single-animal exports are often "flat" with columns like <scorer>_<Bodypart>_x
-  hdr <- readLines(path, n = 2, warn = FALSE)
-  if (length(hdr) < 2) return(NA_character_)
+  hdr <- readLines(path, n = 4, warn = FALSE)
+  if (length(hdr) < 1) return("unknown")
   
-  first_cell_line2 <- stringr::str_split(hdr[2], ",")[[1]][1]
-  if (is.na(first_cell_line2)) return(NA_character_)
+  first <- tolower(strsplit(hdr[1], ",", fixed = TRUE)[[1]][1])
+  if (!identical(first, "scorer")) {
+    # no DeepLabCut multiindex header -> treat as flat header CSV
+    return("flat")
+  }
   
-  if (tolower(first_cell_line2) %in% c("individuals", "individual")) "multi" else "single"
+  if (length(hdr) >= 2) {
+    second <- tolower(strsplit(hdr[2], ",", fixed = TRUE)[[1]][1])
+    if (second %in% c("individuals", "individual")) return("multi")   # 4-row header
+    if (second %in% c("bodyparts", "bodypart"))     return("single")  # 3-row header
+  }
+  
+  # safest fallback for DLC-style files that start with 'scorer'
+  "multi"
 }
 
-###----Function to read DLC csv and create raw data frame---###
-read_dlc_filtered_csv <- function(path, format = c("auto", "multi", "single")) {
+sanitize_dlc_token <- function(x) {
+  x <- as.character(x)
+  x <- stringr::str_replace_all(x, "\\s+", "_")
+  x <- stringr::str_replace_all(x, "[^A-Za-z0-9._-]+", "_")
+  x
+}
+
+normalize_df_cols <- function(df_raw, all_colnames) {
+  if (ncol(df_raw) < length(all_colnames)) {
+    for (i in (ncol(df_raw) + 1):length(all_colnames)) df_raw[[i]] <- NA
+  } else if (ncol(df_raw) > length(all_colnames)) {
+    df_raw <- df_raw[, seq_len(length(all_colnames))]
+  }
+  colnames(df_raw) <- all_colnames
+  
+  df_raw %>%
+    mutate(frame = suppressWarnings(as.integer(frame))) %>%
+    mutate(across(-frame, ~ suppressWarnings(as.numeric(.x))))
+}
+
+###----Function to read DeepLabCut filtered.csv (multi-animal OR single-animal)---###
+read_dlc_filtered_csv <- function(path, format = c("auto", "multi", "single", "flat")) {
   format <- match.arg(format)
-  if (format == "auto") format <- detect_dlc_format(path)
-  if (is.na(format)) return(NULL)
+  
+  if (format == "auto") {
+    format <- detect_dlc_format(path)
+  }
   
   if (format == "multi") {
-    # All multi-animal filtered.csv files from DeepLabCut should have the same 4-row header format
+    # 4-row DLC header: scorer / individuals / bodyparts / coords
     header_lines <- readLines(path, n = 4, warn = FALSE)
     if (length(header_lines) < 4) return(NULL)
     
-    scorer      <- stringr::str_split(header_lines[1], ",")[[1]]
-    individuals <- stringr::str_split(header_lines[2], ",")[[1]]
-    bodyparts   <- stringr::str_split(header_lines[3], ",")[[1]]
-    coords      <- stringr::str_split(header_lines[4], ",")[[1]]
+    scorer      <- str_split(header_lines[1], ",")[[1]]
+    individuals <- str_split(header_lines[2], ",")[[1]]
+    bodyparts   <- str_split(header_lines[3], ",")[[1]]
+    coords      <- str_split(header_lines[4], ",")[[1]]
     
-    # sanity: first column labels
     if (!tolower(individuals[1]) %in% c("individuals", "individual")) return(NULL)
     if (!tolower(bodyparts[1])   %in% c("bodyparts", "bodypart"))     return(NULL)
     if (!tolower(coords[1])      %in% c("coords", "coord"))           return(NULL)
     
-    # build column names
-    multi_names <- paste(individuals[-1], bodyparts[-1], coords[-1], sep = "_")
+    n <- min(length(individuals), length(bodyparts), length(coords)) - 1
+    if (n <= 0) return(NULL)
+    
+    indiv <- sanitize_dlc_token(individuals[2:(n + 1)])
+    bp    <- sanitize_dlc_token(bodyparts[2:(n + 1)])
+    cd    <- sanitize_dlc_token(coords[2:(n + 1)])
+    
+    multi_names <- paste(indiv, bp, cd, sep = "_")
     all_colnames <- c("frame", multi_names)
     
     df_raw <- readr::read_csv(
@@ -55,98 +91,134 @@ read_dlc_filtered_csv <- function(path, format = c("auto", "multi", "single")) {
       progress = FALSE
     )
     
-    # If readr created fewer/more cols than expected, pad/truncate safely
-    if (ncol(df_raw) < length(all_colnames)) {
-      for (i in (ncol(df_raw) + 1):length(all_colnames)) df_raw[[i]] <- NA
-    } else if (ncol(df_raw) > length(all_colnames)) {
-      df_raw <- df_raw[, seq_len(length(all_colnames))]
+    return(normalize_df_cols(df_raw, all_colnames))
+  }
+  
+  if (format == "single") {
+    # 3-row DLC header: scorer / bodyparts / coords  (no individuals row)
+    header_lines <- readLines(path, n = 3, warn = FALSE)
+    if (length(header_lines) < 3) return(NULL)
+    
+    scorer    <- str_split(header_lines[1], ",")[[1]]
+    bodyparts <- str_split(header_lines[2], ",")[[1]]
+    coords    <- str_split(header_lines[3], ",")[[1]]
+    
+    if (!tolower(bodyparts[1]) %in% c("bodyparts", "bodypart")) return(NULL)
+    if (!tolower(coords[1])    %in% c("coords", "coord"))       return(NULL)
+    
+    n <- min(length(bodyparts), length(coords)) - 1
+    if (n <= 0) return(NULL)
+    
+    indiv <- rep("animal1", n)
+    bp    <- sanitize_dlc_token(bodyparts[2:(n + 1)])
+    cd    <- sanitize_dlc_token(coords[2:(n + 1)])
+    
+    multi_names <- paste(indiv, bp, cd, sep = "_")
+    all_colnames <- c("frame", multi_names)
+    
+    df_raw <- readr::read_csv(
+      path,
+      skip = 3,
+      col_names = FALSE,
+      show_col_types = FALSE,
+      progress = FALSE
+    )
+    
+    return(normalize_df_cols(df_raw, all_colnames))
+  }
+  
+  if (format == "flat") {
+    # single-row header (already flattened): e.g. frame,Head_x,Head_y,Head_likelihood,...
+    df_raw <- readr::read_csv(
+      path,
+      col_names = TRUE,
+      show_col_types = FALSE,
+      progress = FALSE
+    )
+    
+    if (ncol(df_raw) < 4) return(NULL)
+    
+    # first column is frame (or X1 if created by readr)
+    nm <- names(df_raw)
+    nm[1] <- "frame"
+    names(df_raw) <- nm
+    
+    # build new names compatible with tidy_dlc(): individual_bodypart_coord
+    new_names <- character(length(nm))
+    new_names[1] <- "frame"
+    
+    for (i in 2:length(nm)) {
+      nmi <- nm[i]
+      
+      # already has individual_bodypart_coord
+      if (grepl("^(.*)_(.*)_(x|y|likelihood)$", nmi)) {
+        new_names[i] <- nmi
+        next
+      }
+      
+      # bodypart_coord (common single-animal flat export)
+      m <- regexec("^(.*)_(x|y|likelihood)$", nmi)
+      mm <- regmatches(nmi, m)[[1]]
+      if (length(mm) == 3) {
+        bp <- sanitize_dlc_token(mm[2])
+        cd <- mm[3]
+        new_names[i] <- paste("animal1", bp, cd, sep = "_")
+        next
+      }
+      
+      # can't interpret -> keep as-is (will likely drop later)
+      new_names[i] <- paste0("animal1_", sanitize_dlc_token(nmi))
     }
     
-    colnames(df_raw) <- all_colnames
+    names(df_raw) <- new_names
     
     df_raw %>%
       mutate(frame = suppressWarnings(as.integer(frame))) %>%
       mutate(across(-frame, ~ suppressWarnings(as.numeric(.x))))
-    
-  } else {
-    # Single-animal "flat header" DLC output
-    df_raw <- readr::read_csv(
-      path,
-      show_col_types = FALSE,
-      progress = FALSE
-    )
-    if (nrow(df_raw) == 0) return(NULL)
-    
-    cn <- names(df_raw)
-    cn_low <- tolower(cn)
-    
-    # frame column sometimes exists, sometimes not
-    frame_idx <- which(cn_low %in% c("frame", "frames"))
-    if (length(frame_idx) >= 1) {
-      frame_col <- cn[frame_idx[1]]
-      df_raw <- df_raw %>%
-        rename(frame = all_of(frame_col)) %>%
-        mutate(frame = suppressWarnings(as.integer(frame)))
-    } else {
-      df_raw <- df_raw %>% mutate(frame = row_number() - 1L)
-    }
-    
-    # rename DLC columns to the same convention used downstream: <individual>_<bodypart>_<coord>
-    # We set a single dummy individual ID so everything else "just works".
-    other_cols <- setdiff(names(df_raw), "frame")
-    
-    make_newname <- function(col) {
-      m <- stringr::str_match(col, "^(.*)_(x|y|likelihood)$")
-      if (any(is.na(m))) return(col)
-      base  <- m[2]
-      coord <- m[3]
-      bodypart <- sub("^.*_", "", base)  # take last '_' chunk as bodypart
-      paste("animal1", bodypart, coord, sep = "_")
-    }
-    
-    new_names <- vapply(other_cols, make_newname, character(1))
-    # ensure uniqueness (rare but possible if bodyparts repeat)
-    new_names <- make.unique(new_names, sep = "_")
-    
-    df_raw <- df_raw %>%
-      rename_with(.fn = ~ new_names, .cols = all_of(other_cols)) %>%
-      relocate(frame)
-    
-    df_raw %>%
-      mutate(across(-frame, ~ suppressWarnings(as.numeric(.x))))
   }
 }
 
+
 ###---Function to get the names of the body parts---###
-###---Function to get the names of the body parts---###
-get_dlc_bodyparts <- function(path, format = c("auto", "multi", "single")) {
+get_dlc_bodyparts <- function(path, format = c("auto", "multi", "single", "flat")) {
   format <- match.arg(format)
   if (format == "auto") format <- detect_dlc_format(path)
-  if (is.na(format)) return(character(0))
   
   if (format == "multi") {
     hdr <- readLines(path, n = 3, warn = FALSE)
     if (length(hdr) < 3) return(character(0))
     bp <- stringr::str_split(hdr[3], ",")[[1]]
-    bp <- bp[-1] # drop the "bodyparts" label
+    bp <- bp[-1]
     bp <- bp[bp != ""]
-    unique(bp)
-  } else {
-    hdr1 <- readLines(path, n = 1, warn = FALSE)
-    if (length(hdr1) < 1) return(character(0))
-    cols <- stringr::str_split(hdr1[1], ",")[[1]]
-    cols <- cols[!tolower(cols) %in% c("frame", "frames")]
-    
-    extract_bp <- function(col) {
-      m <- stringr::str_match(col, "^(.*)_(x|y|likelihood)$")
-      if (any(is.na(m))) return(NA_character_)
-      base <- m[2]
-      sub("^.*_", "", base)
-    }
-    bps <- vapply(cols, extract_bp, character(1))
-    unique(stats::na.omit(bps))
+    return(unique(sanitize_dlc_token(bp)))
   }
+  
+  if (format == "single") {
+    hdr <- readLines(path, n = 2, warn = FALSE)
+    if (length(hdr) < 2) return(character(0))
+    bp <- stringr::str_split(hdr[2], ",")[[1]]
+    bp <- bp[-1]
+    bp <- bp[bp != ""]
+    return(unique(sanitize_dlc_token(bp)))
+  }
+  
+  
+  # flat header
+  nm <- names(readr::read_csv(path, n_max = 0, show_col_types = FALSE))
+  if (length(nm) <= 1) return(character(0))
+  nm <- nm[-1]
+  
+  bps <- vapply(nm, function(nmi) {
+    if (grepl("^(.*)_(.*)_(x|y|likelihood)$", nmi)) {
+      sub("^(.*)_(.*)_(x|y|likelihood)$", "\2", nmi)
+    } else {
+      sub("_(x|y|likelihood)$", "", nmi)
+    }
+  }, character(1))
+  
+  unique(sanitize_dlc_token(bps))
 }
+
 
 ###---Function to convert raw data frame to long format---###
 tidy_dlc <- function(df_raw, bodyparts_keep = NULL, likelihood_min = NULL) {
@@ -366,7 +438,6 @@ extract_title <- function(file_name) {
 ###---Cumulative function which applies above functions to one filtered.csv file---###
 process_one_file <- function(path,
                              file_name = NULL,
-                             dlc_format = c("auto", "multi", "single"),
                              bodyparts_keep = c("mid"),
                              likelihood_min = NULL,
                              threshold_px = 2,
@@ -376,10 +447,13 @@ process_one_file <- function(path,
                              robust_mult = 10,
                              max_excursion_frames = 10,
                              compute_angle = FALSE,
-                             angle_vertex = NULL) {
+                             angle_vertex = NULL,
+                             dlc_format = c("auto", "multi", "single", "flat")) {
+  
+  dlc_format <- match.arg(dlc_format)
+  
   
   fn <- if (!is.null(file_name) && nzchar(file_name)) file_name else basename(path)
-  dlc_format <- match.arg(dlc_format)
   
   df_raw <- read_dlc_filtered_csv(path, format = dlc_format)
   if (is.null(df_raw)) return(NULL)

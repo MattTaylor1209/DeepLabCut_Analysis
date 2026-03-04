@@ -72,15 +72,17 @@ ui <- fluidPage(
       tags$h4("2) Processing settings"),
       textInput("pattern", "File pattern", value = "filtered.csv"),
       
+      
       radioButtons(
         "dlc_format",
         "DLC CSV format",
         choices = c(
+          "Auto-detect" = "auto",
           "Multi-animal (4 header rows: scorer/individuals/bodyparts/coords)" = "multi",
-          "Single-animal (flat header)" = "single",
-          "Auto-detect per file" = "auto"
+          "Single-animal (3 header rows: scorer/bodyparts/coords)" = "single",
+          "Flat header (single row)" = "flat"
         ),
-        selected = "multi"
+        selected = "auto"
       ),
       selectizeInput(
         "bodyparts_keep",
@@ -243,7 +245,8 @@ server <- function(input, output, session) {
     req(nrow(df) > 0)
     
     # union of bodyparts across all files (only reads header lines, so it's fast)
-    bps <- unique(unlist(lapply(df$file_path, get_dlc_bodyparts, format = input$dlc_format)))
+    fmt <- input$dlc_format
+    bps <- unique(unlist(lapply(df$file_path, get_dlc_bodyparts, format = fmt)))
     sort(bps)
   })
   
@@ -253,10 +256,16 @@ server <- function(input, output, session) {
     # keep current selection if possible; otherwise default to "mid" if present
     current <- isolate(input$bodyparts_keep)
     if (is.null(current) || length(current) == 0) {
-      current <- if ("mid" %in% choices) "mid" else choices[1]
+      current <- {
+        mid_idx <- which(tolower(choices) == "mid")
+        if (length(mid_idx)) choices[mid_idx[1]] else choices[1]
+      }
     } else {
       current <- intersect(current, choices)
-      if (length(current) == 0) current <- if ("mid" %in% choices) "mid" else choices[1]
+      if (length(current) == 0) current <- {
+        mid_idx <- which(tolower(choices) == "mid")
+        if (length(mid_idx)) choices[mid_idx[1]] else choices[1]
+      }
     }
     
     updateSelectizeInput(session, "bodyparts_keep",
@@ -304,7 +313,6 @@ server <- function(input, output, session) {
         process_one_file(
           path = .x,
           file_name = .y,   # ✅ preserves original upload name
-          dlc_format = input$dlc_format,
           bodyparts_keep = if (length(bodyparts_keep)) bodyparts_keep else NULL,
           likelihood_min = likelihood_min,
           threshold_px   = input$threshold_px,
@@ -314,7 +322,8 @@ server <- function(input, output, session) {
           robust_mult     = input$robust_mult,
           max_excursion_frames = input$max_excursion_frames,
           compute_angle   = isTRUE(input$compute_angle),
-          angle_vertex    = input$angle_vertex
+          angle_vertex    = input$angle_vertex,
+          dlc_format      = input$dlc_format
         )
       })
       
