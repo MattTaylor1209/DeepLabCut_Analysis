@@ -143,9 +143,7 @@ ui <- fluidPage(
       numericInput("strip_text_size", "Facet strip size", value = 13, min = 6, step = 1),
       
       tags$br(), tags$br(),
-      uiOutput("file_picker_ui"),
-      tags$hr(),
-      downloadButton("download_summary", "Download summary CSV")
+      uiOutput("file_picker_ui")
     ),
     
     mainPanel(
@@ -173,6 +171,7 @@ ui <- fluidPage(
         ),
         tabPanel("Summary",
                  tags$h4("Mean moving speed per individual (mid by default)"),
+                 downloadButton("download_summary", "Download summary CSV"),
                  DTOutput("summary_table")
         ),
         tabPanel("Dunnett vs reference",
