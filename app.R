@@ -71,6 +71,17 @@ ui <- fluidPage(
       
       tags$h4("2) Processing settings"),
       textInput("pattern", "File pattern", value = "filtered.csv"),
+      
+      radioButtons(
+        "dlc_format",
+        "DLC CSV format",
+        choices = c(
+          "Multi-animal (4 header rows: scorer/individuals/bodyparts/coords)" = "multi",
+          "Single-animal (flat header)" = "single",
+          "Auto-detect per file" = "auto"
+        ),
+        selected = "multi"
+      ),
       selectizeInput(
         "bodyparts_keep",
         "Bodyparts to keep",
@@ -103,7 +114,7 @@ ui <- fluidPage(
       ),
       checkboxInput("drop_over_max_speed", "Drop speeds above max in plots + summary", value = TRUE),
       
-    
+      
       tags$hr(),
       
       
@@ -233,7 +244,7 @@ server <- function(input, output, session) {
     req(nrow(df) > 0)
     
     # union of bodyparts across all files (only reads header lines, so it's fast)
-    bps <- unique(unlist(lapply(df$file_path, get_dlc_bodyparts)))
+    bps <- unique(unlist(lapply(df$file_path, get_dlc_bodyparts, format = input$dlc_format)))
     sort(bps)
   })
   
@@ -294,6 +305,7 @@ server <- function(input, output, session) {
         process_one_file(
           path = .x,
           file_name = .y,   # ✅ preserves original upload name
+          dlc_format = input$dlc_format,
           bodyparts_keep = if (length(bodyparts_keep)) bodyparts_keep else NULL,
           likelihood_min = likelihood_min,
           threshold_px   = input$threshold_px,

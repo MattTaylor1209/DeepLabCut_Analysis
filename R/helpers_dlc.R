@@ -8,62 +8,144 @@
 
 
 ###----Function to in the data and create raw data frame---###
-read_dlc_filtered_csv <- function(path) {
-  # All filtered.csv files from DeepLabCut should have the same format
-  # Check if the first 4 lines are headers and read them
-  header_lines <- readLines(path, n = 4, warn = FALSE)
-  if (length(header_lines) < 4) return(NULL)
+detect_dlc_format <- function(path) {
+  # Heuristic:
+  # Multi-animal DLC filtered.csv typically has 4 header rows:
+  #   scorer / individuals / bodyparts / coords
+  # Single-animal exports are often "flat" with columns like <scorer>_<Bodypart>_x
+  hdr <- readLines(path, n = 2, warn = FALSE)
+  if (length(hdr) < 2) return(NA_character_)
   
-  # The following information should correspond to the first 4 lines
-  scorer      <- str_split(header_lines[1], ",")[[1]]
-  individuals <- str_split(header_lines[2], ",")[[1]]
-  bodyparts   <- str_split(header_lines[3], ",")[[1]]
-  coords      <- str_split(header_lines[4], ",")[[1]]
+  first_cell_line2 <- stringr::str_split(hdr[2], ",")[[1]][1]
+  if (is.na(first_cell_line2)) return(NA_character_)
   
-  # sanity: first column labels
-  if (!tolower(individuals[1]) %in% c("individuals", "individual")) return(NULL)
-  if (!tolower(bodyparts[1])   %in% c("bodyparts", "bodypart"))     return(NULL)
-  if (!tolower(coords[1])      %in% c("coords", "coord"))           return(NULL)
+  if (tolower(first_cell_line2) %in% c("individuals", "individual")) "multi" else "single"
+}
+
+###----Function to read DLC csv and create raw data frame---###
+read_dlc_filtered_csv <- function(path, format = c("auto", "multi", "single")) {
+  format <- match.arg(format)
+  if (format == "auto") format <- detect_dlc_format(path)
+  if (is.na(format)) return(NULL)
   
-  # build column names
-  multi_names <- paste(individuals[-1], bodyparts[-1], coords[-1], sep = "_")
-  all_colnames <- c("frame", multi_names)
-  
-  # Build the raw data frame
-  df_raw <- readr::read_csv(
-    path,
-    skip = 4,               
-    col_names = FALSE,
-    show_col_types = FALSE,
-    progress = FALSE
-  )
-  
-  # If readr created fewer/more cols than expected, pad/truncate safely
-  if (ncol(df_raw) < length(all_colnames)) {
-    # pad missing columns with NA
-    for (i in (ncol(df_raw) + 1):length(all_colnames)) df_raw[[i]] <- NA
-  } else if (ncol(df_raw) > length(all_colnames)) {
-    df_raw <- df_raw[, seq_len(length(all_colnames))]
+  if (format == "multi") {
+    # All multi-animal filtered.csv files from DeepLabCut should have the same 4-row header format
+    header_lines <- readLines(path, n = 4, warn = FALSE)
+    if (length(header_lines) < 4) return(NULL)
+    
+    scorer      <- stringr::str_split(header_lines[1], ",")[[1]]
+    individuals <- stringr::str_split(header_lines[2], ",")[[1]]
+    bodyparts   <- stringr::str_split(header_lines[3], ",")[[1]]
+    coords      <- stringr::str_split(header_lines[4], ",")[[1]]
+    
+    # sanity: first column labels
+    if (!tolower(individuals[1]) %in% c("individuals", "individual")) return(NULL)
+    if (!tolower(bodyparts[1])   %in% c("bodyparts", "bodypart"))     return(NULL)
+    if (!tolower(coords[1])      %in% c("coords", "coord"))           return(NULL)
+    
+    # build column names
+    multi_names <- paste(individuals[-1], bodyparts[-1], coords[-1], sep = "_")
+    all_colnames <- c("frame", multi_names)
+    
+    df_raw <- readr::read_csv(
+      path,
+      skip = 4,
+      col_names = FALSE,
+      show_col_types = FALSE,
+      progress = FALSE
+    )
+    
+    # If readr created fewer/more cols than expected, pad/truncate safely
+    if (ncol(df_raw) < length(all_colnames)) {
+      for (i in (ncol(df_raw) + 1):length(all_colnames)) df_raw[[i]] <- NA
+    } else if (ncol(df_raw) > length(all_colnames)) {
+      df_raw <- df_raw[, seq_len(length(all_colnames))]
+    }
+    
+    colnames(df_raw) <- all_colnames
+    
+    df_raw %>%
+      mutate(frame = suppressWarnings(as.integer(frame))) %>%
+      mutate(across(-frame, ~ suppressWarnings(as.numeric(.x))))
+    
+  } else {
+    # Single-animal "flat header" DLC output
+    df_raw <- readr::read_csv(
+      path,
+      show_col_types = FALSE,
+      progress = FALSE
+    )
+    if (nrow(df_raw) == 0) return(NULL)
+    
+    cn <- names(df_raw)
+    cn_low <- tolower(cn)
+    
+    # frame column sometimes exists, sometimes not
+    frame_idx <- which(cn_low %in% c("frame", "frames"))
+    if (length(frame_idx) >= 1) {
+      frame_col <- cn[frame_idx[1]]
+      df_raw <- df_raw %>%
+        rename(frame = all_of(frame_col)) %>%
+        mutate(frame = suppressWarnings(as.integer(frame)))
+    } else {
+      df_raw <- df_raw %>% mutate(frame = row_number() - 1L)
+    }
+    
+    # rename DLC columns to the same convention used downstream: <individual>_<bodypart>_<coord>
+    # We set a single dummy individual ID so everything else "just works".
+    other_cols <- setdiff(names(df_raw), "frame")
+    
+    make_newname <- function(col) {
+      m <- stringr::str_match(col, "^(.*)_(x|y|likelihood)$")
+      if (any(is.na(m))) return(col)
+      base  <- m[2]
+      coord <- m[3]
+      bodypart <- sub("^.*_", "", base)  # take last '_' chunk as bodypart
+      paste("animal1", bodypart, coord, sep = "_")
+    }
+    
+    new_names <- vapply(other_cols, make_newname, character(1))
+    # ensure uniqueness (rare but possible if bodyparts repeat)
+    new_names <- make.unique(new_names, sep = "_")
+    
+    df_raw <- df_raw %>%
+      rename_with(.fn = ~ new_names, .cols = all_of(other_cols)) %>%
+      relocate(frame)
+    
+    df_raw %>%
+      mutate(across(-frame, ~ suppressWarnings(as.numeric(.x))))
   }
-  
-  # Set the column names of the raw data frame
-  colnames(df_raw) <- all_colnames
-  
-  # Make values numeric
-  df_raw %>%
-    mutate(frame = suppressWarnings(as.integer(frame))) %>%
-    mutate(across(-frame, ~ suppressWarnings(as.numeric(.x))))
 }
 
 ###---Function to get the names of the body parts---###
-get_dlc_bodyparts <- function(path) {
-  hdr <- readLines(path, n = 3, warn = FALSE)
-  if (length(hdr) < 3) return(character(0))
+###---Function to get the names of the body parts---###
+get_dlc_bodyparts <- function(path, format = c("auto", "multi", "single")) {
+  format <- match.arg(format)
+  if (format == "auto") format <- detect_dlc_format(path)
+  if (is.na(format)) return(character(0))
   
-  bp <- stringr::str_split(hdr[3], ",")[[1]]
-  bp <- bp[-1] # drop the "bodyparts" label
-  bp <- bp[bp != ""]
-  unique(bp)
+  if (format == "multi") {
+    hdr <- readLines(path, n = 3, warn = FALSE)
+    if (length(hdr) < 3) return(character(0))
+    bp <- stringr::str_split(hdr[3], ",")[[1]]
+    bp <- bp[-1] # drop the "bodyparts" label
+    bp <- bp[bp != ""]
+    unique(bp)
+  } else {
+    hdr1 <- readLines(path, n = 1, warn = FALSE)
+    if (length(hdr1) < 1) return(character(0))
+    cols <- stringr::str_split(hdr1[1], ",")[[1]]
+    cols <- cols[!tolower(cols) %in% c("frame", "frames")]
+    
+    extract_bp <- function(col) {
+      m <- stringr::str_match(col, "^(.*)_(x|y|likelihood)$")
+      if (any(is.na(m))) return(NA_character_)
+      base <- m[2]
+      sub("^.*_", "", base)
+    }
+    bps <- vapply(cols, extract_bp, character(1))
+    unique(stats::na.omit(bps))
+  }
 }
 
 ###---Function to convert raw data frame to long format---###
@@ -284,6 +366,7 @@ extract_title <- function(file_name) {
 ###---Cumulative function which applies above functions to one filtered.csv file---###
 process_one_file <- function(path,
                              file_name = NULL,
+                             dlc_format = c("auto", "multi", "single"),
                              bodyparts_keep = c("mid"),
                              likelihood_min = NULL,
                              threshold_px = 2,
@@ -296,8 +379,9 @@ process_one_file <- function(path,
                              angle_vertex = NULL) {
   
   fn <- if (!is.null(file_name) && nzchar(file_name)) file_name else basename(path)
+  dlc_format <- match.arg(dlc_format)
   
-  df_raw <- read_dlc_filtered_csv(path)
+  df_raw <- read_dlc_filtered_csv(path, format = dlc_format)
   if (is.null(df_raw)) return(NULL)
   
   df_long <- df_raw %>%
