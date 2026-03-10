@@ -173,6 +173,18 @@ ui <- fluidPage(
         ),
         tabPanel("Summary",
                  tags$h4("Mean moving speed per individual (mid by default)"),
+                 checkboxInput("convertunits", "Convert pixel units to mm?", value = FALSE),
+                 conditionalPanel(
+                   condition = "input.convertunits == true",
+                   numericInput("scalefactor", "Pixel scale factor (mm per pixel)", 
+                                min = 0.01, max = 10, step = 0.05, value = 0.1)
+                 ),
+                 checkboxInput("convertspeed", "Convert speed units to per second?", value = FALSE),
+                 conditionalPanel(
+                   condition = "input.convertspeed == true",
+                   numericInput("framerate", "Video frame rate", 
+                                min = 1, max = 240, step = 1, value = 5)
+                 ),
                  downloadButton("download_summary", "Download summary CSV"),
                  DTOutput("summary_table")
         ),
@@ -373,7 +385,21 @@ server <- function(input, output, session) {
                 .groups = "drop")
     
     # Combine
-    left_join(speed_stats, pct_moving, by = c("group", "file_name", "individual"))
+    result <- left_join(speed_stats, pct_moving, 
+                        by = c("group", "file_name", "individual"))
+    
+    # Apply unit conversions
+    scale <- if (input$convertunits) input$scalefactor else 1
+    fps   <- if (input$convertspeed) input$framerate else 1
+    
+    result <- result %>%
+      mutate(
+        mean_moving_speed    = mean_moving_speed * scale * fps,
+        median_moving_speed  = median_moving_speed * scale * fps,
+        total_distance_moved = total_distance_moved * scale  # distance, not speed — no fps
+      )
+    
+    result
   })
   
   
