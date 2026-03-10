@@ -357,12 +357,23 @@ server <- function(input, output, session) {
       enabled = input$drop_over_max_speed
     )
     
-    dat2 %>%
-      filter(moving %in% TRUE, !(is_big_jump %in% TRUE)) %>%
+    # Get percent time moving from full data
+    pct_moving <- dat2 %>%
       group_by(group, file_name, individual) %>%
-      summarise(mean_speed = mean(speed, na.rm = TRUE), 
-                median_speed = median(speed, na.rm = TRUE),
+      summarise(percent_time_moving = mean(moving, na.rm = TRUE) * 100,
                 .groups = "drop")
+    
+    # Get speed stats from filtered data
+    speed_stats <- dat2 %>%
+      filter(moving == TRUE, !is_big_jump) %>%
+      group_by(group, file_name, individual) %>%
+      summarise(mean_moving_speed = mean(speed, na.rm = TRUE),
+                median_moving_speed = median(speed, na.rm = TRUE),
+                total_distance_moved = sum(speed, na.rm = TRUE),
+                .groups = "drop")
+    
+    # Combine
+    left_join(speed_stats, pct_moving, by = c("group", "file_name", "individual"))
   })
   
   
