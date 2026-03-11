@@ -48,6 +48,7 @@ normalize_df_cols <- function(df_raw, all_colnames) {
   
   df_raw %>%
     mutate(frame = suppressWarnings(as.integer(frame))) %>%
+    filter(!is.na(frame)) %>%
     mutate(across(-frame, ~ suppressWarnings(as.numeric(.x))))
 }
 
@@ -174,6 +175,7 @@ read_dlc_filtered_csv <- function(path, format = c("auto", "multi", "single", "f
     
     df_raw %>%
       mutate(frame = suppressWarnings(as.integer(frame))) %>%
+      filter(!is.na(frame)) %>%
       mutate(across(-frame, ~ suppressWarnings(as.numeric(.x))))
   }
 }
