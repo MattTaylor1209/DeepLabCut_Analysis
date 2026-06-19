@@ -1,46 +1,58 @@
 # R/helpers_dlc.R
 # ============================================================================
-# Helper functions for DeepLabCut filtered.csv processing + plotting
+# Helper functions for DeepLabCut / SLEAP tracking CSV processing + plotting
 #
 # This file contains the full pipeline for reading, tidying, processing, and
-# plotting DeepLabCut tracking data. Functions are organised into sections:
+# plotting animal tracking data exported from DeepLabCut (filtered.csv) or
+# SLEAP (analysis.csv). Functions are organised into sections:
 #
-#   1. CSV format detection and reading
-#   2. Data tidying (wide -> long)
-#   3. Speed, jump, excursion, and movement calculations
-#   4. Angle computation and head-swing detection
-#   5. File metadata extraction
-#   6. Main processing pipeline (process_one_file)
-#   7. Plotting functions
-#   8. Plotly helpers
+#   1.  DLC CSV format detection and reading
+#   1b. SLEAP CSV reading (parallel reader/tidier for SLEAP's analysis.csv)
+#   2.  Data tidying (wide -> long)
+#   3.  Speed, jump, excursion, and movement calculations
+#   4.  Angle computation and head-swing detection
+#   5.  File metadata extraction
+#   6.  Main processing pipeline (process_one_file)
+#   7.  Plotting functions
+#   8.  Plotly helpers
+#
+# DLC and SLEAP each get their own reader + tidier (Sections 1/1b/2), but both
+# converge on the same long-format shape (frame, individual, bodypart, x, y,
+# likelihood) so every later step is completely format-agnostic.
 #
 # Expects tidyverse, slider, and plotly to be loaded by app.R.
 # ============================================================================
 
 
 # ============================================================================
-# 1. CSV FORMAT DETECTION AND READING
+# 1. DLC CSV FORMAT DETECTION AND READING
 # ============================================================================
 
-#' Detect the DLC CSV format by inspecting the first few header rows.
+#' Detect the tracking CSV format by inspecting the first few header rows.
 #'
-#' DLC exports three formats:
+#' Recognises DLC's three export formats plus SLEAP's analysis.csv export:
 #'   - "multi"  : 4-row header (scorer / individuals / bodyparts / coords)
 #'   - "single" : 3-row header (scorer / bodyparts / coords, no individuals)
 #'   - "flat"   : 1-row header (already flattened column names)
+#'   - "sleap"  : SLEAP analysis.csv export (1-row header starting "track")
 #'   - "unknown": file is empty or unreadable
 #'
 #' @param path File path to the CSV.
-#' @return Character string: "multi", "single", "flat", or "unknown".
+#' @return Character string: "multi", "single", "flat", "sleap", or "unknown".
 detect_dlc_format <- function(path) {
   hdr <- readLines(path, n = 4, warn = FALSE)
   
   # Empty file guard
   if (length(hdr) < 1) return("unknown")
   
-  # Check whether the first cell is "scorer" (DLC multi-row header signature)
   first_cell <- tolower(strsplit(hdr[1], ",", fixed = TRUE)[[1]][1])
   
+  # SLEAP's analysis.csv export always starts with a "track" column, which
+  # is distinct enough from DLC's "scorer" / pre-flattened headers to detect
+  # up front, before checking for the DLC multi-row header signature
+  if (identical(first_cell, "track")) return("sleap")
+  
+  # Check whether the first cell is "scorer" (DLC multi-row header signature)
   if (!identical(first_cell, "scorer")) {
     # No DLC multi-index header -- treat as a pre-flattened single-row header
     return("flat")
@@ -240,11 +252,15 @@ read_dlc_filtered_csv <- function(path, format = c("auto", "multi", "single", "f
 #' file in a batch to build a union of available bodyparts.
 #'
 #' @param path   File path to the CSV.
-#' @param format One of "auto", "multi", "single", "flat".
+#' @param format One of "auto", "multi", "single", "flat", "sleap".
 #' @return Character vector of unique sanitized bodypart names.
-get_dlc_bodyparts <- function(path, format = c("auto", "multi", "single", "flat")) {
+get_dlc_bodyparts <- function(path, format = c("auto", "multi", "single", "flat", "sleap")) {
   format <- match.arg(format)
   if (format == "auto") format <- detect_dlc_format(path)
+  
+  # SLEAP has its own header layout (bodyparts encoded as "{bodypart}.x" etc.
+  # column suffixes rather than dedicated header rows), so it gets its own helper
+  if (format == "sleap") return(get_sleap_bodyparts(path))
   
   # Multi-animal: bodyparts are in header row 3
   if (format == "multi") {
@@ -277,6 +293,121 @@ get_dlc_bodyparts <- function(path, format = c("auto", "multi", "single", "flat"
   })
   
   unique(sanitize_dlc_token(bps))
+}
+
+
+# ============================================================================
+# 1b. SLEAP SUPPORT
+# ============================================================================
+#
+# SLEAP's "analysis.csv" export (one of the formats produced by sleap-convert
+# or File > Export Analysis CSV in the SLEAP GUI) has a single header row and
+# is already "one row per individual (track) per frame":
+#
+#   track,frame_idx,instance.score,Head.score,Head.x,Head.y,Mid.score,...
+#
+# This is structurally different from DLC's wide export (one column per
+# measurement, individual/bodypart encoded into the column name), so it gets
+# its own reader + tidier rather than being shoehorned through
+# read_dlc_filtered_csv()/tidy_dlc(). Both tidiers converge on the same long
+# format (frame, individual, bodypart, x, y, likelihood), so every function
+# downstream of tidying (add_speed(), filter_big_jumps(), plotting, etc.) is
+# completely unaware of which format the data originally came from.
+
+#' Read a SLEAP analysis.csv export into a wide-per-individual data frame.
+#'
+#' @param path File path to the SLEAP analysis CSV.
+#' @return Tibble with columns: frame, individual, plus "{bodypart}.score" /
+#'         ".x" / ".y" columns for each tracked bodypart. Returns NULL if the
+#'         expected "track"/"frame_idx" columns aren't present.
+read_sleap_csv <- function(path) {
+  df_raw <- readr::read_csv(path, show_col_types = FALSE, progress = FALSE)
+  
+  if (!all(c("track", "frame_idx") %in% names(df_raw))) return(NULL)
+  
+  df_raw %>%
+    rename(individual = track, frame = frame_idx) %>%
+    mutate(frame = suppressWarnings(as.integer(frame))) %>%
+    # Drop detections SLEAP couldn't assign a track identity to -- there's no
+    # individual to attribute them to, analogous to DLC's trailing NA-frame rows
+    filter(!is.na(individual), individual != "", !is.na(frame)) %>%
+    # Real-world SLEAP exports can contain a rare duplicate row for the same
+    # (track, frame) with every score column blank but identical x/y -- an
+    # export artefact, not a second detection. instance.score is otherwise
+    # not used downstream, so drop it here once it's served this purpose.
+    filter(!is.na(instance.score)) %>%
+    select(-instance.score)
+}
+
+#' Extract unique bodypart names from a SLEAP analysis.csv header.
+#'
+#' Only reads the header row (no data), mirroring get_dlc_bodyparts()'s
+#' fast header-only scanning so it's cheap to call across a whole batch.
+#'
+#' @param path File path to the SLEAP CSV.
+#' @return Character vector of unique sanitized bodypart names.
+get_sleap_bodyparts <- function(path) {
+  nm <- names(readr::read_csv(path, n_max = 0, show_col_types = FALSE))
+  
+  # Bodypart columns look like "Head.score" / "Head.x" / "Head.y" -- capture
+  # the part before the suffix, excluding the per-instance "instance.score"
+  bp <- str_match(nm, "^(.*)\\.(score|x|y)$")[, 2]
+  bp <- bp[!is.na(bp) & bp != "instance"]
+  
+  unique(sanitize_dlc_token(bp))
+}
+
+#' Convert a SLEAP wide-per-individual data frame to tidy long format.
+#'
+#' Deliberately mirrors tidy_dlc()'s output shape -- frame, individual,
+#' bodypart, x, y, likelihood -- so the rest of the pipeline is completely
+#' format-agnostic. SLEAP's "{bodypart}.score" (a per-node confidence score)
+#' is renamed to "likelihood" to match DLC's terminology, since both serve
+#' the same role (e.g. for the likelihood_min filter below).
+#'
+#' @param df_raw         Wide tibble from read_sleap_csv().
+#' @param bodyparts_keep Optional character vector of bodyparts to retain.
+#' @param likelihood_min Optional minimum likelihood (SLEAP node score) threshold.
+#' @return Long-format tibble: frame, individual, bodypart, x, y, likelihood.
+tidy_sleap <- function(df_raw, bodyparts_keep = NULL, likelihood_min = NULL) {
+  
+  df_long <- df_raw %>%
+    # Pivot all "{bodypart}.{score,x,y}" columns into long format in one step,
+    # capturing bodypart and coord directly from the column name
+    pivot_longer(
+      cols          = matches("\\.(score|x|y)$"),
+      names_to      = c("bodypart", "coord"),
+      names_pattern = "^(.*)\\.(score|x|y)$",
+      values_to     = "value"
+    ) %>%
+    mutate(
+      bodypart = sanitize_dlc_token(bodypart),
+      coord    = if_else(coord == "score", "likelihood", coord)
+    ) %>%
+    # Spread coord back into separate x / y / likelihood columns
+    pivot_wider(names_from = coord, values_from = value) %>%
+    drop_na(x, y)
+  
+  # Same defensive check as tidy_dlc(): list-columns mean duplicate
+  # frame/individual/bodypart combinations slipped through pivot_wider
+  if (is.list(df_long$x) || is.list(df_long$y)) {
+    stop(
+      "pivot_wider produced list-columns for x/y coordinates. ",
+      "This usually means the CSV contains duplicate frame/individual/bodypart ",
+      "combinations. Check the raw CSV for duplicates.",
+      call. = FALSE
+    )
+  }
+  
+  if (!is.null(bodyparts_keep)) {
+    df_long <- filter(df_long, bodypart %in% bodyparts_keep)
+  }
+  
+  if (!is.null(likelihood_min) && "likelihood" %in% names(df_long)) {
+    df_long <- filter(df_long, is.na(likelihood) | likelihood >= likelihood_min)
+  }
+  
+  df_long
 }
 
 
@@ -659,13 +790,22 @@ flag_head_swing <- function(df_long, swing_deg = 40) {
 # 5. FILE METADATA EXTRACTION
 # ============================================================================
 
-#' Extract the experimental group name from a DLC filtered CSV filename.
+#' Extract the experimental group name from a tracking CSV filename.
 #'
-#' Expects filenames like: "GroupName_123456789DLC_..._filtered.csv"
-#' Extracts everything before the numeric ID + "DLC" portion.
+#' Expects DLC-style filenames like "GroupName_123456789DLC_..._filtered.csv"
+#' and extracts everything before the numeric ID + "DLC" portion. SLEAP
+#' filenames have no such marker, so as a fallback we strip a trailing
+#' "_analysis" suffix (SLEAP's analysis.csv export convention); if that still
+#' doesn't match, the full filename (minus extension) is used so that group
+#' is never NA -- an NA group would silently collapse files together in the
+#' Summary/Dunnett tabs rather than raising an obvious error.
+#'
+#' NOTE: this SLEAP fallback is a guess based on one example filename. If your
+#' SLEAP files encode group identity differently, this regex will need
+#' adjusting -- let me know your naming convention and I can tailor it.
 #'
 #' @param file_name The basename of the CSV file.
-#' @return Character string of the group name, or NA if pattern doesn't match.
+#' @return Character string of the group name (never NA).
 extract_group <- function(file_name) {
   # Try the more specific pattern first: group_<digits>DLC
   grp <- str_extract(file_name, "^.*(?=_[0-9]+DLC)")
@@ -673,6 +813,16 @@ extract_group <- function(file_name) {
   # Fall back to: group + DLC (no underscore + digits)
   if (is.na(grp)) {
     grp <- str_extract(file_name, "^.*(?=DLC)")
+  }
+  
+  # SLEAP fallback: strip a trailing "_analysis" suffix
+  if (is.na(grp)) {
+    grp <- str_extract(file_name, "^.*(?=_[Aa]nalysis)")
+  }
+  
+  # Last resort: filename without its extension (guarantees a non-NA result)
+  if (is.na(grp)) {
+    grp <- tools::file_path_sans_ext(file_name)
   }
   
   grp
@@ -692,7 +842,7 @@ extract_title <- function(file_name) {
 # 6. MAIN PROCESSING PIPELINE
 # ============================================================================
 
-#' Process a single DLC filtered CSV through the full analysis pipeline.
+#' Process a single tracking CSV (DLC or SLEAP) through the full analysis pipeline.
 #'
 #' Reads the file, tidies to long format, computes speed, flags jumps and
 #' excursions, classifies movement, and optionally computes body angles.
@@ -710,7 +860,7 @@ extract_title <- function(file_name) {
 #' @param max_excursion_frames Max frames for a region to be flagged as excursion.
 #' @param compute_angle        Compute body angles? (requires exactly 3 bodyparts).
 #' @param angle_vertex         Which bodypart is the angle vertex.
-#' @param dlc_format           CSV format: "auto", "multi", "single", or "flat".
+#' @param dlc_format           CSV format: "auto", "multi", "single", "flat", or "sleap".
 #' @return Long-format tibble with all computed columns, or NULL on failure.
 process_one_file <- function(path,
                              file_name            = NULL,
@@ -724,16 +874,29 @@ process_one_file <- function(path,
                              max_excursion_frames = 10,
                              compute_angle        = FALSE,
                              angle_vertex         = NULL,
-                             dlc_format           = c("auto", "multi", "single", "flat")) {
+                             dlc_format           = c("auto", "multi", "single", "flat", "sleap")) {
   
   dlc_format <- match.arg(dlc_format)
+  
+  # Resolve "auto" once, up front, so the rest of this function only ever
+  # deals with a concrete format
+  if (dlc_format == "auto") dlc_format <- detect_dlc_format(path)
   
   # Use the provided display name, or fall back to the file basename
   fn <- if (!is.null(file_name) && nzchar(file_name)) file_name else basename(path)
   message("[process] Starting: ", fn)
   
   # --- Step 1: Read raw CSV ---
-  df_raw <- read_dlc_filtered_csv(path, format = dlc_format)
+  # SLEAP's export shape is different enough from DLC's that it gets its own
+  # reader + tidier pair (read_sleap_csv()/tidy_sleap()); both converge on the
+  # same long-format shape, so every step from here on is format-agnostic
+  if (dlc_format == "sleap") {
+    df_raw  <- read_sleap_csv(path)
+    tidy_fn <- tidy_sleap
+  } else {
+    df_raw  <- read_dlc_filtered_csv(path, format = dlc_format)
+    tidy_fn <- tidy_dlc
+  }
   
   if (is.null(df_raw)) {
     warning("Could not read file: ", fn, call. = FALSE)
@@ -751,7 +914,7 @@ process_one_file <- function(path,
   
   # --- Step 2: Tidy to long format, compute speed, flag artefacts ---
   df_long <- df_raw %>%
-    tidy_dlc(bodyparts_keep = bodyparts_keep, likelihood_min = likelihood_min) %>%
+    tidy_fn(bodyparts_keep = bodyparts_keep, likelihood_min = likelihood_min) %>%
     add_speed() %>%
     filter_big_jumps(
       max_jump_px     = max_jump_px,

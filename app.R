@@ -1,10 +1,11 @@
 # app.R
 # ============================================================================
-# Shiny app for DeepLabCut filtered.csv batch processing, plotting, and stats
+# Shiny app for DeepLabCut / SLEAP batch processing, plotting, and stats
 #
 # Features:
 #   - Batch import from local folder or file upload
-#   - Auto-detection of DLC CSV formats (multi, single, flat)
+#   - Auto-detection of DLC CSV formats (multi, single, flat) and SLEAP's
+#     analysis.csv export
 #   - Interactive trajectory plots (plotly) with moving/still colouring
 #   - Speed traces, body angle plots, head-swing detection
 #   - Summary statistics with optional unit conversion
@@ -39,7 +40,7 @@ options(shiny.maxRequestSize = 200 * 1024^2)  # allow uploads up to 200 MB
 
 ui <- fluidPage(
   theme = shinytheme("simplex"),
-  titlePanel("DeepLabCut CSV Explorer (filtered.csv)"),
+  titlePanel("DeepLabCut / SLEAP CSV Explorer"),
   
   sidebarLayout(
     
@@ -85,14 +86,16 @@ ui <- fluidPage(
       tags$h4("2) Processing settings"),
       
       textInput("pattern", "File pattern", value = "filtered.csv"),
+      helpText("e.g. 'filtered.csv' for DLC exports, or 'analysis.csv' for SLEAP exports"),
       
       radioButtons(
-        "dlc_format", "DLC CSV format",
+        "dlc_format", "Tracking CSV format",
         choices = c(
           "Auto-detect"                                                    = "auto",
           "Multi-animal (4 header rows: scorer/individuals/bodyparts/coords)" = "multi",
           "Single-animal (3 header rows: scorer/bodyparts/coords)"         = "single",
-          "Flat header (single row)"                                       = "flat"
+          "Flat header (single row)"                                       = "flat",
+          "SLEAP (analysis.csv export)"                                    = "sleap"
         ),
         selected = "auto"
       ),
